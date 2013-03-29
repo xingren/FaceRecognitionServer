@@ -1,0 +1,26 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 2012
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "my_server", "my_server\my_server.vcxproj", "{39264AF9-BD10-4B5B-AF8C-EA7BD04A588B}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "FaceRecognition", "FaceRecognition\FaceRecognition.vcxproj", "{D5A67625-B960-40F7-BDC8-E219B96BE44D}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Win32 = Debug|Win32
+		Release|Win32 = Release|Win32
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{39264AF9-BD10-4B5B-AF8C-EA7BD04A588B}.Debug|Win32.ActiveCfg = Debug|Win32
+		{39264AF9-BD10-4B5B-AF8C-EA7BD04A588B}.Debug|Win32.Build.0 = Debug|Win32
+		{39264AF9-BD10-4B5B-AF8C-EA7BD04A588B}.Release|Win32.ActiveCfg = Release|Win32
+		{39264AF9-BD10-4B5B-AF8C-EA7BD04A588B}.Release|Win32.Build.0 = Release|Win32
+		{D5A67625-B960-40F7-BDC8-E219B96BE44D}.Debug|Win32.ActiveCfg = Debug|Win32
+		{D5A67625-B960-40F7-BDC8-E219B96BE44D}.Debug|Win32.Build.0 = Debug|Win32
+		{D5A67625-B960-40F7-BDC8-E219B96BE44D}.Release|Win32.ActiveCfg = Release|Win32
+		{D5A67625-B960-40F7-BDC8-E219B96BE44D}.Release|Win32.Build.0 = Release|Win32
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal
