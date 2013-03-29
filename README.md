@@ -1,4 +1,4 @@
 FaceRecognitionServer
 =====================
 
-face recognition use the OpenCV libary and server write with boost asio libary
+face recognition use the OpenCV library and server write with boost asio library
