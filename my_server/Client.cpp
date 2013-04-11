@@ -7,7 +7,7 @@ Client::Client(io_service& io,unsigned long server_thread_id_):cli_socket(io),se
 {
 	id = ++client_id;
 	recv_file = nullptr;
-	timer_.async_wait(boost::bind(&Client::alive_timeout,shared_from_this(),boost::asio::placeholders::error));
+	
 }
 
 Client::~Client(void)
@@ -75,7 +75,9 @@ void Client::recv_handler(const boost::system::error_code& ec,size_t bytes_trans
 			serialize_int(total_bytes,(char*)recv_buf);
 			recv_file = recv_buf + 4;
 
-			cli_socket.async_read_some(buffer(recv_package.get_data(),recv_package.get_total_len()),
+		//	cli_socket.async_read_some(buffer(recv_package.get_data(),recv_package.get_total_len()),
+		//		boost::bind(&Client::recv_file_handler,shared_from_this(),boost::asio::placeholders::error,boost::asio::placeholders::bytes_transferred));
+			async_read(cli_socket,buffer(recv_package.get_data(),recv_package.get_total_len),
 				boost::bind(&Client::recv_file_handler,shared_from_this(),boost::asio::placeholders::error,boost::asio::placeholders::bytes_transferred));
 		}
 		else if(match_string(content,bytes_transferred-recv_package.get_header_len(),"RECTS",5))
@@ -263,6 +265,7 @@ void Client::send_dective_result(CvRect *prects,size_t size)
 
 void Client::start()
 {
+//	timer_.async_wait(boost::bind(&Client::alive_timeout,shared_from_this(),boost::asio::placeholders::error));
 	post_recv();
 //	Sleep(5000);
 }
@@ -278,9 +281,20 @@ void Client::alive_write_handler(const boost::system::error_code& ec,size_t byte
 	}
 }
 
+void Client::wait_check_alive(const boost::system::error_code& ec)
+{
+	cout << "shutdown the client" << endl;
+	boost::system::error_code ec2;
+	cli_socket.shutdown(cli_socket.shutdown_both,ec2);
+	cli_socket.close();
+	PostThreadMessage(server_thread_id,WM_CLIENT_DISCONNECT,client_id,NULL);
+}
+
 void Client::alive_timeout(const boost::system::error_code& ec)
 {
 	if(ec == boost::asio::error::operation_aborted || ec)
 		return;
+	cout << "alive with nothing to do logger the time" << endl;
 	async_write(cli_socket,buffer("IS_ALIVE"),boost::bind(&Client::alive_write_handler,shared_from_this(),boost::asio::placeholders::error,boost::asio::placeholders::bytes_transferred));
+	timer_.async_wait(boost::bind(&Client::wait_check_alive,shared_from_this(),boost::asio::placeholders::error));
 }

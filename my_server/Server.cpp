@@ -364,6 +364,10 @@ void Server::accept_handler(const boost::system::error_code& ec,client_ptr& clie
 		client->start();
 		start_next_accept();
 	}
+	else
+	{
+		std::cout << boost::system::system_error(ec).what() << endl;
+	}
 }
 
 void Server::set_server_addr(unsigned int port,std::string ip)

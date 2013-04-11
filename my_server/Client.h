@@ -16,7 +16,7 @@ using namespace std;
 
 class Client:public boost::enable_shared_from_this<Client>
 {
-	static const int MAX_ALIVE_SECOND = 5;
+	static const int MAX_ALIVE_SECOND = 50;
 public:
 	
 	Client(io_service &io,unsigned long server_thread_id);
@@ -37,6 +37,7 @@ public:
 	bool match_string(char* src,int len1,char* comp,int len2);
 	void alive_timeout(const boost::system::error_code& ec);
 	void alive_write_handler(const boost::system::error_code& ec,size_t bytes_transferred);
+	void wait_check_alive(const boost::system::error_code& ec);
 	void reset_timer()
 	{
 		timer_.expires_at(timer_.expires_at() + boost::posix_time::seconds(MAX_ALIVE_SECOND));

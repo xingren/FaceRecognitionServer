@@ -95,10 +95,12 @@ struct WorkInfo
 	}
 };
 
-queue<WorkInfo> vw;
-queue<int> work_queue;
+//需要被图片识别的任务队列
+queue<WorkInfo> work_queue;
+//queue<int> work_queue;
 vector<WorkInfo> cli_vec;
 
+//相当于session，保存当前客户端的一些数据
 map<int,WorkInfo> cli_map;
 
 uchar *file_mapping;
@@ -238,18 +240,14 @@ unsigned int WINAPI Core(VOID* param)
 		if(work_queue.size() == 0)
 		{
 			work_queue_mutex.unlock();
-			Sleep(100);
+			Sleep(1000);
 			continue;
 		}
-		cli_id = work_queue.front();
+		tmp = work_queue.front();
 		work_queue.pop();
 		//vw.pop();
 		work_queue_mutex.unlock();
-		cli_map_mutex.lock();
-		map<int,WorkInfo>::iterator iter = cli_map.find(tmp.cli_id);
-		cli_map_mutex.unlock();
 
-		tmp = iter->second;
 
 		switch(tmp.work_type)
 		{
@@ -257,7 +255,7 @@ unsigned int WINAPI Core(VOID* param)
 			{
 				
 
-				imshow("test",iter->second.img);
+				imshow("test",tmp.img);
 				waitKey();
 				cv::destroyWindow("test");
 
@@ -273,13 +271,19 @@ unsigned int WINAPI Core(VOID* param)
 						tmp.rects.push_back(*rects[i]);
 				}
 
-				//之所以再搜索是因为iter所指向的可能会被删除，所以要确定是否还在
+				
+				//更新cli_map的信息
 				cli_map_mutex.lock();
-
+				map<int,WorkInfo>::iterator iter;
 				iter = cli_map.find(cli_id);
-				if(cli_map.end() != iter)//没有被删除
+				if(cli_map.end() != iter)
 				{
-					iter->second = tmp;
+					iter->second.img = tmp.img;
+					
+				}
+				else
+				{
+					cli_map.insert(pair<int,WorkInfo>(tmp.cli_id,tmp));
 				}
 
 				memcpy(rects_mapping,rects,sizeof(CvRect)*count);
@@ -317,7 +321,26 @@ unsigned int WINAPI ProcessMessage(VOID* param)
 		cout << "error in hResultMapping" << endl;
 	}
 
-	
+		file_mapping = (uchar*)MapViewOfFile(hFileMapping,FILE_MAP_ALL_ACCESS,
+					0,0,0);
+	rects_mapping = (char*)MapViewOfFile(hResultMapping,FILE_MAP_ALL_ACCESS,
+					0,0,0);
+
+	if(nullptr == file_mapping )
+	{
+		printf("error in MapViewOffFile with file_mapping: %ld\n",GetLastError());
+		PostThreadMessage(server_thread_id,WM_RECOGNITION_ERROR,NULL,NULL);
+		return -1;
+	}
+	if(nullptr == rects_mapping)
+	{
+		printf("error in MapViewOffFile with rects: %ld\n",GetLastError());
+		PostThreadMessage(server_thread_id,WM_RECOGNITION_ERROR,NULL,NULL);
+		return -1;
+	}
+
+	printf("file_mapping point:%x\n",file_mapping);
+	printf("rects point:%x\n",rects_mapping);
 
 	
 	BOOL bRet;
@@ -347,18 +370,19 @@ unsigned int WINAPI ProcessMessage(VOID* param)
 				//shared memory read finish,
 				SetEvent(file_mapping_op_finish);
 				//flag2
-				int cli_id = msg.wParam;
+				
 
 				printf("Recognition: WM_IMAGE flag1 done\n");
 				WorkInfo tmp;
+				tmp.cli_id = msg.wParam;
 				tmp.personId.push_back(msg.wParam);
 				Mat img = imdecode(vu,CV_LOAD_IMAGE_COLOR);
 				printf("Recognition: WM_IMAGE flag2 done\n");
 				tmp.img = img;
 				tmp.work_type = IMAGE;
 				work_queue_mutex.lock();
-				vw.push(tmp);
-				work_queue.push(cli_id);
+				//vw.push(tmp);
+				work_queue.push(tmp);
 				work_queue_mutex.unlock();
 			}
 			break;
@@ -417,26 +441,7 @@ int _tmain(int argc, _TCHAR* argv[]) {
 	thread_done = CreateEvent(NULL,FALSE,FALSE,"build-message-queue");
 	
 
-	file_mapping = (uchar*)MapViewOfFile(hFileMapping,FILE_MAP_ALL_ACCESS,
-					0,0,0);
-	rects_mapping = (char*)MapViewOfFile(hResultMapping,FILE_MAP_ALL_ACCESS,
-					0,0,0);
 
-	if(nullptr == file_mapping )
-	{
-		printf("error in MapViewOffFile with file_mapping: %ld\n",GetLastError());
-		PostThreadMessage(server_thread_id,WM_RECOGNITION_ERROR,NULL,NULL);
-		return -1;
-	}
-	if(nullptr == rects_mapping)
-	{
-		printf("error in MapViewOffFile with rects: %ld\n",GetLastError());
-		PostThreadMessage(server_thread_id,WM_RECOGNITION_ERROR,NULL,NULL);
-		return -1;
-	}
-
-	printf("file_mapping point:%x\n",file_mapping);
-	printf("rects point:%x\n",rects_mapping);
 
 	main_thread_id = GetCurrentThreadId();
 	thread_done = CreateEvent(NULL,FALSE,FALSE,"build-thread-queue");
