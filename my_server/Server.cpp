@@ -31,7 +31,8 @@ Server::Server(io_service &io,unsigned int port,std::string ip):io_service_(io),
 	file_mapping_buf = (char *)MapViewOfFile(hFileMapping,FILE_MAP_ALL_ACCESS,0,0,0);
 	rects_mapping_buf = MapViewOfFile(hResultMapping,FILE_MAP_ALL_ACCESS,0,0,0);
 	rects_mapping_mutex = CreateMutex(NULL,FALSE,"rects_mapping_mutex");//本线程拥有mutex，其它线程无法拥有
-	file_mapping_op_finish = CreateEvent(NULL,FALSE,TRUE,"file_mapping_op_finish");
+	file_mapping_mutex = CreateMutex(NULL,FALSE,"file_mapping_mutex");
+//	file_mapping_op_finish = CreateEvent(NULL,FALSE,TRUE,"file_mapping_op_finish");
 
 	if(nullptr == file_mapping_buf )
 	{
@@ -124,7 +125,7 @@ Server::~Server()
 	CloseHandle(hFileMapping);
 	CloseHandle(hResultMapping);
 
-	CloseHandle(file_mapping_op_finish);
+//	CloseHandle(file_mapping_op_finish);
 	CloseHandle(rects_mapping_mutex);
 }
 bool Server::init()
@@ -180,7 +181,7 @@ void Server::serialize_int(int val,char* out)
 	out[3] = (val >> 24)&255;
 }
 
-void Server::deserialize_int(char* in,int& val)
+void Server::deserialize_int(uchar* in,int& val)
 {
 	val = 0;
 	val |= in[0];
@@ -225,11 +226,13 @@ unsigned int WINAPI Server::Core()
 				uchar* recv_file = recv_buf + 4;
 				int clientId = msg.wParam;
 				int total_bytes;
-				deserialize_int((char*)recv_buf,total_bytes);
-				
-				WaitForSingleObject(file_mapping_op_finish,INFINITE);
+				deserialize_int(recv_buf,total_bytes);
+				cout << "total bytes in Server::Core: " << total_bytes << endl;
+//				WaitForSingleObject(file_mapping_op_finish,INFINITE);
 //				ResetEvent(file_mapping_op_finish);
+				WaitForSingleObject(file_mapping_mutex,INFINITE);
 				memcpy(file_mapping_buf,recv_buf,total_bytes+4);
+				ReleaseMutex(file_mapping_mutex);
 				int count = 0;
 				while(count < 10 && PostThreadMessage(recognition_thread_id,WM_IMAGE,clientId,NULL) == 0)
 				{
@@ -271,15 +274,55 @@ unsigned int WINAPI Server::Core()
 			{
 				
 				int size = msg.lParam;
-				
-				CvRect *rects = new CvRect[size];
-				memcpy(rects,rects_mapping_buf,sizeof(CvRect)*size);
+				char *result = nullptr; //如果有在堆上申请内存，最终会在Client::send_dective_result内释放
+				int len = 0;
+				if(size != 0)
+				{
+					result = new char[(sizeof(CvRect)+4)*size];
+					WaitForSingleObject(rects_mapping_mutex,INFINITE);
+					memcpy(result,rects_mapping_buf,(sizeof(CvRect)+4)*size);
+					ReleaseMutex(rects_mapping_mutex);
+
+					//构造包
+					vector<PersonData> persons;
+					vector<CvRect> rects;
+					int id;
+					CvRect rect;
+					PersonData p;
+					for(int i = 0;i < size ;i++)
+					{
+						memcpy(&id,result + i*(sizeof(CvRect) + 4),4);
+						memcpy(&rect,result + i*(sizeof(CvRect)+4)+4,sizeof(CvRect));
+						p = getPersonInDatabase(id);
+						persons.push_back(p);
+						rects.push_back(rect);
+						len += 2 + p.name.length() + 1 + sizeof(CvRect);
+					}
+					
+					delete[] result;
+
+					result = nullptr;
+					result = new char[len+4];
+
+					memcpy(result,&len,4);
+					char* ptr = result + 4;
+					for(int i = 0;i < size;i++)
+					{
+						//这里的id是name的长度
+						id = persons.at(i).name.length();
+						memcpy(ptr,&id,2);
+						memcpy(ptr+2,persons.at(i).name.c_str(),id);
+						memcpy(ptr+2+id,&rects.at(i),sizeof(CvRect));
+						ptr += 2 + id + sizeof(CvRect);
+					}
+
+				}
 				int clientId = msg.wParam;
 				cli_map_mutex.lock();
 				map<int,client_ptr>::iterator iter = client_map.find(clientId);
 				if(iter != client_map.end())
 				{
-					iter->second->send_dective_result(rects,size);
+					iter->second->send_dective_result(result,len+4);
 				}
 				cli_map_mutex.unlock();
 			}
@@ -381,6 +424,31 @@ void Server::set_server_addr(unsigned int port,std::string ip)
 	}
 	
 }
+
+
+PersonData Server::getPersonInDatabase(int client_id)
+{
+	char query[50];
+	sprintf(query,"select * from person where Id=%d",client_id);
+	MYSQL_RES* result = nullptr;
+	int resCount;
+	resCount = mysql_query(sql_con,query);
+	PersonData p;
+	if(0 != resCount)
+	{
+		result = mysql_store_result(sql_con);
+		if(nullptr != result)
+		{
+			MYSQL_ROW row = nullptr;
+			row = mysql_fetch_row(result);
+			p.name = row[1];
+			p.sex = atoi(row[2]);
+		}
+	}
+	return p;
+}
+
+
 //unsigned int WINAPI Server::write_share_file()
 //{
 //	MSG msg;

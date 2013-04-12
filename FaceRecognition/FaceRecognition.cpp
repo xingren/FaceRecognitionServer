@@ -48,6 +48,11 @@ DWORD main_thread_id;
 HANDLE hFileMapping;
 HANDLE hResultMapping;
 DWORD message_thread_id;
+
+HANDLE rects_mapping_mutex;//对检测结果的共享区域互斥访问
+HANDLE file_mapping_mutex;//对待检测图片的共享区域互斥访问
+
+
 #endif
 #include "../message_types.h"
 
@@ -67,7 +72,7 @@ using namespace std;
 
 static const int async_run_num = 4;
 const int IPC_BUFF_SIZE = 1024*1024*10*async_run_num;
-HANDLE file_mapping_op_finish;
+//HANDLE file_mapping_op_finish;
 
 Ptr<FaceRecognizer> model;//facerecognition ,use opencv lib
 
@@ -77,6 +82,23 @@ boost::mutex cli_map_mutex;
 #define IMAGE 0
 #define ADD 1
 #define RECOGNIZE 2
+
+template<class T>
+void deserialze(char* p,size_t len,T& val)
+{
+	size_t size = sizeof(T);
+	int n = min(len,size);
+	memcpy(&val,p,n);
+}
+
+template<class T>
+void serialze(char *out,size_t len,T& val)
+{
+	size_t size = sizeof(T);
+	int n= min(len,size);
+	memcpy(p,&val,n);
+}
+
 
 struct WorkInfo
 {
@@ -125,13 +147,18 @@ CvRect** displaydetection(IplImage *pInpImg,int &resCount)
 		1.2,2,CV_HAAR_DO_CANNY_PRUNING,cvSize(40,40));
 	//将检测到的人脸以矩形框标出。
 	int i;
-	cvNamedWindow("haar window",1);
+	
 	printf("the number of face is %d\n",pFaceRectSeq->total);
-	if(pFaceRectSeq->total == 0)
-		return NULL;
-
-	IplImage *result = cvCreateImage(cvSize(92,112),pInpImg->depth,pInpImg->nChannels);
 	resCount = pFaceRectSeq->total;
+	if(pFaceRectSeq->total == 0)
+	{
+		cvReleaseHaarClassifierCascade(&pCascade);
+		cvReleaseMemStorage(&pStorage);
+		return nullptr;
+	}
+	cvNamedWindow("haar window",1);
+	IplImage *result = cvCreateImage(cvSize(92,112),pInpImg->depth,pInpImg->nChannels);
+	
 	//if(NULL == result)
 	//	//添加错误处理：无法分配内存
 	//{}
@@ -261,14 +288,34 @@ unsigned int WINAPI Core(VOID* param)
 
 
 				IplImage img = IplImage(tmp.img);
-				int count;
+				int resCount;
 				CvRect** rects;
-				rects = displaydetection(&img,count);
+				rects = displaydetection(&img,resCount);
 
 				if(nullptr != rects)
 				{
-					for(int i = 0;i < count;i++)
+					for(int i = 0;i < resCount;i++)
 						tmp.rects.push_back(*rects[i]);
+					//识别
+					IplImage *face_gray = cvCreateImage(cvSize(FACE_WIDTH,FACE_HIGH),img.depth,1);
+					WaitForSingleObject(rects_mapping_mutex,INFINITE);
+					for(int i = 0;i<resCount;i++)
+					{
+						cvSetImageROI(&img,*rects[i]);
+						cvCvtColor(&img,face_gray,CV_RGB2GRAY);
+						int label = -1;
+						label = model->predict(Mat(face_gray));
+						label = (label < 1000)?-1:label;
+						serialze(rects_mapping + i*(sizeof(CvRect) + 4),4,label);
+						tmp.personId.push_back(label);
+
+						//这里要互斥访问
+						memcpy(rects_mapping + i*(sizeof(CvRect) + 4)+4,rects[i],sizeof(CvRect));
+						
+
+					}
+					ReleaseMutex(rects_mapping_mutex);
+
 				}
 
 				
@@ -286,9 +333,8 @@ unsigned int WINAPI Core(VOID* param)
 					cli_map.insert(pair<int,WorkInfo>(tmp.cli_id,tmp));
 				}
 
-				memcpy(rects_mapping,rects,sizeof(CvRect)*count);
-
-				PostThreadMessage(server_thread_id,WM_RESULT_DECTIVE,cli_id,count);
+				cout << "send the dective results to server" << endl;
+				PostThreadMessage(server_thread_id,WM_RESULT_DECTIVE,cli_id,resCount);
 				cli_map_mutex.unlock();
 			}
 			break;
@@ -360,15 +406,17 @@ unsigned int WINAPI ProcessMessage(VOID* param)
 				
 				printf("Recognition: WM_IMAGE\n");
 				//flag1
+				WaitForSingleObject(file_mapping_mutex,INFINITE);
 				uchar* buf = file_mapping + 4;
 				size_t len;
 				deserialze((char*)file_mapping,4,len);
 				vector<uchar> vu;
 				for(int i = 0;i < len;i++)
 					vu.push_back(buf[i]);
+				ReleaseMutex(file_mapping_mutex);
 				//getchar();
 				//shared memory read finish,
-				SetEvent(file_mapping_op_finish);
+				//SetEvent(file_mapping_op_finish);
 				//flag2
 				
 
@@ -436,13 +484,21 @@ int _tmain(int argc, _TCHAR* argv[]) {
 	sstr >> str;
 	sstr >> server_thread_id;
 
-	file_mapping_op_finish = OpenEvent(EVENT_ALL_ACCESS,FALSE,"file_mapping_op_finish");
-	
-	thread_done = CreateEvent(NULL,FALSE,FALSE,"build-message-queue");
-	
+	file_mapping_mutex = OpenMutex(NULL,FALSE,"file_mapping_mutex");
+	rects_mapping_mutex = OpenMutex(NULL,FALSE,"rects_mapping_mutex");
 
-
-
+	if(rects_mapping_mutex == NULL)
+	{
+		printf("failed to open mutex:file_mapping_mutex");
+		PostThreadMessage(server_thread_id,WM_RECOGNITION_ERROR,NULL,NULL);
+		return -1;
+	}
+	if(file_mapping_mutex == NULL)
+	{
+		printf("failed to open mutex:rects_mapping_mutex");
+		PostThreadMessage(server_thread_id,WM_RECOGNITION_ERROR,NULL,NULL);
+		return -1;
+	}
 	main_thread_id = GetCurrentThreadId();
 	thread_done = CreateEvent(NULL,FALSE,FALSE,"build-thread-queue");
 	HANDLE get_message_thread = (HANDLE)_beginthreadex(NULL,NULL,ProcessMessage,NULL,NULL,(unsigned int*)&message_thread_id);
@@ -485,7 +541,7 @@ int _tmain(int argc, _TCHAR* argv[]) {
 			CloseHandle(get_message_thread);
 			CloseHandle(thread_done);
 			CloseHandle(core_thread_handler);
-			CloseHandle(file_mapping_op_finish);
+		//	CloseHandle(file_mapping_op_finish);
 			return 0;
 			break;
 		}
@@ -493,6 +549,6 @@ int _tmain(int argc, _TCHAR* argv[]) {
 	CloseHandle(get_message_thread);
 	CloseHandle(thread_done);
 	CloseHandle(core_thread_handler);
-	CloseHandle(file_mapping_op_finish);
+//	CloseHandle(file_mapping_op_finish);
     return 0;
 }

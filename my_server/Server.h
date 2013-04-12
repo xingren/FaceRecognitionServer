@@ -2,6 +2,7 @@
 #include "common.h"
 #include "client.h"
 #include <mysql/mysql.h>
+#include "PersonData.h"
 
 //define thread message
 #include "../message_types.h"
@@ -30,9 +31,13 @@ public:
 	static int count;
 	unsigned int WINAPI Core();
 	void serialize_int(int val,char* out);
-	void deserialize_int(char *in,int& val);
+	void deserialize_int(uchar *in,int& val);
 	unsigned int WINAPI write_share_file();
 	unsigned int WINAPI read_result();
+
+	PersonData getPersonInDatabase(int client_id);
+
+
 
 public:
 	io_service& io_service_;
@@ -54,18 +59,23 @@ public:
 	DWORD recognition_main_thread_id;
 	HANDLE write_share_mem_thread;
 	HANDLE read_share_mem_thread;
-	unsigned int write_share_mem_thread_id;
-	unsigned int read_share_mem_thread_id;
+//	unsigned int write_share_mem_thread_id;
+//	unsigned int read_share_mem_thread_id;
 	HANDLE hFileMapping;
 	HANDLE hResultMapping;
 	void* file_mapping_buf;
 	void* rects_mapping_buf;
 
 	//process and thread sync var
-	HANDLE file_mapping_op_finish;
+//	HANDLE file_mapping_op_finish;
+
 	boost::mutex cli_map_mutex;
 	//HANDLE share_mem_mutex;
 	HANDLE rects_mapping_mutex;
+	HANDLE file_mapping_mutex;
+
+
+
 	//mariadb part
 	MYSQL* sql_con;
 	//int in,out;

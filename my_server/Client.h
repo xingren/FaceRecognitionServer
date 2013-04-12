@@ -17,6 +17,8 @@ using namespace std;
 class Client:public boost::enable_shared_from_this<Client>
 {
 	static const int MAX_ALIVE_SECOND = 50;
+	static const int PACKAGE_TYPE_LEN = 10;
+
 public:
 	
 	Client(io_service &io,unsigned long server_thread_id);
@@ -28,7 +30,7 @@ public:
 	void recv_file_handler(const boost::system::error_code& ec,size_t bytes_transferred);//use to recv file
 	void recv_rects_handler(const boost::system::error_code& ec,size_t bytes_transferred);
 	void recv_person_data_handler(const boost::system::error_code& ec,size_t bytes_transferred);
-	void send_dective_result(CvRect *rects,size_t size);
+	void send_dective_result(void *rects,size_t size);
 	void start();
 	//void send_handler(const boost::system::error_code& ec,size_t bytes_transferred);
 	void send_handler(void *p,const boost::system::error_code& ec,size_t bytes_transferred);

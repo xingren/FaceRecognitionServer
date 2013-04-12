@@ -28,3 +28,20 @@ StdAfx.h, StdAfx.cpp
 应用程序向导使用“TODO:”注释来指示应添加或自定义的源代码部分。
 
 /////////////////////////////////////////////////////////////////////////////
+
+
+
+Server ---> App 网络包格式：4+10+data ,其中前4字节为包的大小，10字节为包的类型(package type)，data为数据
+package type:
+1.
+RESULT
+data format:
+{
+data length
+
+name length
+name
+sex
+CvRect
+...
+}
