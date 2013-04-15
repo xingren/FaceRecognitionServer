@@ -80,21 +80,14 @@ void Client::recv_handler(const boost::system::error_code& ec,size_t bytes_trans
 			async_read(cli_socket,buffer(recv_package.get_data(),recv_package.get_total_len()),
 				boost::bind(&Client::recv_file_handler,shared_from_this(),boost::asio::placeholders::error,boost::asio::placeholders::bytes_transferred));
 		}
-		else if(match_string(content,bytes_transferred-recv_package.get_header_len(),"RECTS",5))
-		{
-			cout << "prepare to recv select face rect and person data" << endl;
-			recv_bytes = total_bytes = 0;
-
-			deserialze(content+5,4,nRects);
-			rects = new CvRect[nRects];
-			recv_package.reCreateData(nRects * sizeof(CvRect));
-			async_read(cli_socket,buffer(recv_package.get_data(),nRects * sizeof(CvRect)),
-				boost::bind(&Client::recv_rects_handler,shared_from_this(),boost::asio::placeholders::error,boost::asio::placeholders::bytes_transferred));
-
-		}
 		else if(match_string(content,bytes_transferred - recv_package.get_header_len(),"ALIVE",5))
 		{
 			reset_timer();
+		}
+		else if(match_string(content,bytes_transferred - recv_package.get_header_len(),"MODIFY",6))
+		{
+			//包的格式:包的长度（4）+名字的长度（2）+名字+sex+CvRect
+
 		}
 		else
 		{
@@ -216,9 +209,11 @@ void Client::send_handler(void* p,const boost::system::error_code &ec,size_t byt
 void Client::send_dective_result(void *result,size_t size)
 {
 	
-	char tmp[PACKAGE_TYPE_LEN] = "RESULT";
+	char tmp[PACKAGE_TYPE_LEN] = "DETECT_RESULT";
 	char *data = new char[size+PACKAGE_TYPE_LEN+4];
-	serialize_int(size+PACKAGE_TYPE_LEN,data);
+	//serialize_int(size+PACKAGE_TYPE_LEN,data);
+	int len = size+PACKAGE_TYPE_LEN+4;
+	memcpy(data,&len,4);
 	memcpy(data + 4,tmp,PACKAGE_TYPE_LEN);
 	if(size != 0)
 	{

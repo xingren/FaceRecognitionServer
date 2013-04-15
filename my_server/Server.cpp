@@ -30,18 +30,30 @@ Server::Server(io_service &io,unsigned int port,std::string ip):io_service_(io),
 	hResultMapping = CreateFileMapping(INVALID_HANDLE_VALUE,NULL,PAGE_READWRITE,0,IPC_BUFF_SIZE,"result-mapping");
 	file_mapping_buf = (char *)MapViewOfFile(hFileMapping,FILE_MAP_ALL_ACCESS,0,0,0);
 	rects_mapping_buf = MapViewOfFile(hResultMapping,FILE_MAP_ALL_ACCESS,0,0,0);
-	rects_mapping_mutex = CreateMutex(NULL,FALSE,"rects_mapping_mutex");//本线程拥有mutex，其它线程无法拥有
-	file_mapping_mutex = CreateMutex(NULL,FALSE,"file_mapping_mutex");
+	rects_mapping_mutex = CreateMutex(NULL,FALSE,"Global\\rects_mapping_mutex");//本线程拥有mutex，其它线程无法拥有
+	file_mapping_mutex = CreateMutex(NULL,FALSE,"Global\\file_mapping_mutex");
+	wait_for_recognition_load = CreateEvent(NULL,FALSE,FALSE,"recognition_load");
 //	file_mapping_op_finish = CreateEvent(NULL,FALSE,TRUE,"file_mapping_op_finish");
 
+	if(nullptr == rects_mapping_mutex)
+	{
+		printf("error in CreateMutext,rects_mapping_mutex:%ld\n",GetLastError());
+		return;
+	}
+	if(nullptr == file_mapping_mutex)
+	{
+		printf("error in CreateMutext,file_mapping_mutex:%ld\n",GetLastError());
+		return;
+	}
 	if(nullptr == file_mapping_buf )
 	{
 		printf("error in MapViewOffFile with file_mapping_buf: %ld\n",GetLastError());
-		
+		return;
 	}
 	if(nullptr == rects_mapping_buf)
 	{
 		printf("error in MapViewOffFile with rects_mapping_buf: %ld\n",GetLastError());
+		return;
 	}
 
 
@@ -59,7 +71,7 @@ Server::Server(io_service &io,unsigned int port,std::string ip):io_service_(io),
 	//方法二：曲线救国，通过一些比较迂回的方式创建非静态成员函数线程
 	//对于void Class::func()类型的函数，在编译的时候会转换成普通函数 void func(Class *this),
 	//也就是说对于每个成员函数，都会转换成普通函数，并原来的成员函数第一个参数前插入一个类的this指针参数
-	//_beginthread函数的第一个参数的形式要求为void (*func)(void *)，恰好和编译好的成员函数属于同类型，
+	//_beginthread函数的第一个参数的形式要求为void (*func)(void *)，恰好和编译好的无传入参数成员函数属于同类型，
 	//通过union将void (*func)(void *)和类的成员函数关联在一起
 	//注意，此方法仅限void Class::func()类型的成员函数
 	//还有一种方式就是用静态成员函数调用非静态成员函数
@@ -101,6 +113,9 @@ Server::Server(io_service &io,unsigned int port,std::string ip):io_service_(io),
 	Sleep(1000);
 	CloseHandle(CoreStartEvent);
 	
+	WaitForSingleObject(wait_for_recognition_load,INFINITE);
+	
+	std::cout << "begin init accept" << std::endl;
 	
 	if(!init())
 	{
@@ -125,8 +140,9 @@ Server::~Server()
 	CloseHandle(hFileMapping);
 	CloseHandle(hResultMapping);
 
-//	CloseHandle(file_mapping_op_finish);
+	CloseHandle(file_mapping_mutex);
 	CloseHandle(rects_mapping_mutex);
+	CloseHandle(wait_for_recognition_load);
 }
 bool Server::init()
 {
@@ -228,8 +244,6 @@ unsigned int WINAPI Server::Core()
 				int total_bytes;
 				deserialize_int(recv_buf,total_bytes);
 				cout << "total bytes in Server::Core: " << total_bytes << endl;
-//				WaitForSingleObject(file_mapping_op_finish,INFINITE);
-//				ResetEvent(file_mapping_op_finish);
 				WaitForSingleObject(file_mapping_mutex,INFINITE);
 				memcpy(file_mapping_buf,recv_buf,total_bytes+4);
 				ReleaseMutex(file_mapping_mutex);
@@ -239,21 +253,6 @@ unsigned int WINAPI Server::Core()
 					printf("error in post thread,tell recognition recieve image:%ld\n",GetLastError());
 					count ++;
 				}
-
-
-				/*uchar* recv_file = recv_buf + 4;
-				int total_bytes;
-				deserialize_int((char*)recv_buf,total_bytes);
-				vector<uchar> vec;
-				vec.reserve(total_bytes);
-				for(int i = 0;i<total_bytes;i++)
-				{
-					vec.push_back(recv_file[i]);
-				}
-
-				Mat img_mat = imdecode(vec,CV_LOAD_IMAGE_COLOR);
-				imshow("recv_image",img_mat);
-				cvWaitKey();*/
 			}
 			break;
 		case WM_ADD_FACE://come from client
@@ -272,7 +271,8 @@ unsigned int WINAPI Server::Core()
 			break;
 		case WM_RESULT_DECTIVE://从FaceRecognition传送过来的检测消息
 			{
-				
+				int clientId = msg.wParam;
+				cout << "WM_RESULT_DECTIVE with client_id "<< clientId << endl;
 				int size = msg.lParam;
 				char *result = nullptr; //如果有在堆上申请内存，最终会在Client::send_dective_result内释放
 				int len = 0;
@@ -286,16 +286,26 @@ unsigned int WINAPI Server::Core()
 					//构造包
 					vector<PersonData> persons;
 					vector<CvRect> rects;
-					int id;
+					int person_id;
 					CvRect rect;
 					PersonData p;
 					for(int i = 0;i < size ;i++)
 					{
-						memcpy(&id,result + i*(sizeof(CvRect) + 4),4);
+						memcpy(&person_id,result + i*(sizeof(CvRect) + 4),4);
 						memcpy(&rect,result + i*(sizeof(CvRect)+4)+4,sizeof(CvRect));
-						p = getPersonInDatabase(id);
+						p = getPersonInDatabase(person_id);
 						persons.push_back(p);
 						rects.push_back(rect);
+						map<CvRect,int>::iterator iter = personId_map.find(rect);
+						if(iter != personId_map.end())
+						{
+							iter->second = person_id;
+						}
+						else
+						{
+							personId_map.insert(pair<CvRect,int>(rect,person_id));
+						}
+						printf("the %d rect is:%d,%d,%d,%d\n",i,rect.x,rect.y,rect.width,rect.height);
 						len += 2 + p.name.length() + 1 + sizeof(CvRect);
 					}
 					
@@ -306,22 +316,26 @@ unsigned int WINAPI Server::Core()
 
 					memcpy(result,&len,4);
 					char* ptr = result + 4;
+					int &nlen = person_id;
 					for(int i = 0;i < size;i++)
 					{
 						//这里的id是name的长度
-						id = persons.at(i).name.length();
-						memcpy(ptr,&id,2);
-						memcpy(ptr+2,persons.at(i).name.c_str(),id);
-						memcpy(ptr+2+id,&rects.at(i),sizeof(CvRect));
-						ptr += 2 + id + sizeof(CvRect);
+						nlen = persons.at(i).name.length();
+						memcpy(ptr,&nlen,2);
+						memcpy(ptr+2,persons.at(i).name.c_str(),nlen);
+						memcpy(ptr+2+nlen,&persons.at(i).sex,1);
+						memcpy(ptr + 2 + nlen + 1,&rects.at(i),sizeof(CvRect));
+						printf("%d the sex is %d,%d\n",i,persons.at(i).sex,char(*(ptr+2+nlen)));
+						ptr += 2 + nlen + 1 + sizeof(CvRect);
 					}
 
 				}
-				int clientId = msg.wParam;
+				
 				cli_map_mutex.lock();
 				map<int,client_ptr>::iterator iter = client_map.find(clientId);
 				if(iter != client_map.end())
 				{
+					cout << "send recognition result to client: " << clientId  << "result length " << len << endl;
 					iter->second->send_dective_result(result,len+4);
 				}
 				cli_map_mutex.unlock();
@@ -426,23 +440,39 @@ void Server::set_server_addr(unsigned int port,std::string ip)
 }
 
 
-PersonData Server::getPersonInDatabase(int client_id)
+PersonData Server::getPersonInDatabase(int person_id)
 {
-	char query[50];
-	sprintf(query,"select * from person where Id=%d",client_id);
-	MYSQL_RES* result = nullptr;
-	int resCount;
-	resCount = mysql_query(sql_con,query);
 	PersonData p;
-	if(0 != resCount)
+	p.id = person_id;
+	if(person_id == -1)
+	{
+		return p;
+	}
+	char query[50];
+	sprintf(query,"select * from person where Id=%d",person_id);
+	MYSQL_RES* result = nullptr;
+	
+	char col[10][20];
+	if(!mysql_query(sql_con,query))
 	{
 		result = mysql_store_result(sql_con);
 		if(nullptr != result)
 		{
 			MYSQL_ROW row = nullptr;
 			row = mysql_fetch_row(result);
-			p.name = row[1];
-			p.sex = atoi(row[2]);
+			int field_num = mysql_num_fields(result);
+			MYSQL_FIELD* fds=  mysql_fetch_fields(result);
+
+			if(nullptr != row)
+			{
+				for(int i = 0;i<field_num;i++)
+				{
+					if(strcmp(fds[i].name,"name") == 0)
+						p.name = row[i];
+					else if(strcmp(fds[i].name,"sex")==0)
+						p.sex = atoi(row[i]);
+				}
+			}
 		}
 	}
 	return p;

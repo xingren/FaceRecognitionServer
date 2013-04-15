@@ -37,13 +37,38 @@ public:
 
 	PersonData getPersonInDatabase(int client_id);
 
-
+	struct LessRect
+	{
+		bool operator()(const CvRect&a,const CvRect&b)const
+		{
+			if(a.x < b.x)
+				return true;
+			else if(a.x == b.x)
+			{
+				if(a.y < b.y)
+					return true;
+				else if(a.y == b.y)
+				{
+					if(a.width < b.width)
+						return true;
+					else if(a.width == b.width)
+					{
+						return a.height < b.height;
+					}
+					return false;
+				}
+				return false;
+			}
+			return false;
+		}
+	};
 
 public:
 	io_service& io_service_;
 	ip::tcp::acceptor acceptor;
 	
 	map<int,client_ptr> client_map;
+	map<CvRect,int,LessRect> personId_map;//将检测出来的人脸和数据库中的人的ID关联起来
 	boost::container::vector<Client> reuse_client_can;
 	ip::tcp::endpoint server_addr;
 	bool is_start;
@@ -57,8 +82,8 @@ public:
 	PROCESS_INFORMATION recognition_process_info;
 	HANDLE core_thread_handle;
 	DWORD recognition_main_thread_id;
-	HANDLE write_share_mem_thread;
-	HANDLE read_share_mem_thread;
+	HANDLE wait_for_recognition_load;
+	
 //	unsigned int write_share_mem_thread_id;
 //	unsigned int read_share_mem_thread_id;
 	HANDLE hFileMapping;

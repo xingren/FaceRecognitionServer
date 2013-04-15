@@ -96,7 +96,7 @@ void serialze(char *out,size_t len,T& val)
 {
 	size_t size = sizeof(T);
 	int n= min(len,size);
-	memcpy(p,&val,n);
+	memcpy(out,&val,n);
 }
 
 
@@ -113,6 +113,7 @@ struct WorkInfo
 		this->work_type = a.work_type;
 		this->personId = a.personId;
 		this->rects = a.rects;
+		cli_id = a.cli_id;
 		return *this;
 	}
 };
@@ -127,7 +128,7 @@ map<int,WorkInfo> cli_map;
 
 uchar *file_mapping;
 char *rects_mapping;
-CvRect** displaydetection(IplImage *pInpImg,int &resCount)
+CvRect* displaydetection(IplImage *pInpImg,int &resCount)
 {
 
 	CvHaarClassifierCascade* pCascade=0;		//指向后面从文件中获取的分类器
@@ -166,13 +167,13 @@ CvRect** displaydetection(IplImage *pInpImg,int &resCount)
 	IplImage *show_img = cvCreateImage(cvSize(92,112),pInpImg->depth,pInpImg->nChannels);
 
 	char str[100];
-	CvRect** res = new CvRect*[resCount];
+	CvRect* res = new CvRect[resCount];
 	for (i=0; i<(pFaceRectSeq?pFaceRectSeq->total:0); i++)
 	{
 
 		CvRect* r=(CvRect*)cvGetSeqElem(pFaceRectSeq,i);
-		res[i] = new CvRect;
-		memcpy(res[i],r,sizeof(CvRect));
+		
+		memcpy(&res[i],r,sizeof(CvRect));
 		CvPoint pt1= {r->x,r->y};
 		CvPoint pt2= {r->x+r->width,r->y+r->height};
 
@@ -246,13 +247,6 @@ void MyPostThreadMessage(DWORD thread_id,MSG &msg)
 	}
 }
 
-template<class T>
-void deserialze(char* p,size_t len,T& val)
-{
-	size_t size = sizeof(T);
-	int n = min(len,size);
-	memcpy(&val,p,n);
-}
 
 
 
@@ -275,34 +269,40 @@ unsigned int WINAPI Core(VOID* param)
 		//vw.pop();
 		work_queue_mutex.unlock();
 
-
+		cli_id = tmp.cli_id;
 		switch(tmp.work_type)
 		{
 		case IMAGE:
 			{
-				
+				printf("recognition with client id %d\n",cli_id);
 
-				imshow("test",tmp.img);
-				waitKey();
-				cv::destroyWindow("test");
+			//	imshow("test",tmp.img);
+			//	waitKey();
+			//	cv::destroyWindow("test");
 
 
 				IplImage img = IplImage(tmp.img);
 				int resCount;
-				CvRect** rects;
+				CvRect* rects;
 				rects = displaydetection(&img,resCount);
 
 				if(nullptr != rects)
 				{
 					for(int i = 0;i < resCount;i++)
-						tmp.rects.push_back(*rects[i]);
+						tmp.rects.push_back(rects[i]);
 					//识别
 					IplImage *face_gray = cvCreateImage(cvSize(FACE_WIDTH,FACE_HIGH),img.depth,1);
+					IplImage *face = cvCreateImage(cvSize(FACE_WIDTH,FACE_HIGH),img.depth,img.nChannels);
 					WaitForSingleObject(rects_mapping_mutex,INFINITE);
 					for(int i = 0;i<resCount;i++)
 					{
-						cvSetImageROI(&img,*rects[i]);
-						cvCvtColor(&img,face_gray,CV_RGB2GRAY);
+						printf("the %d rect is:%d,%d,%d,%d\n",i,rects[i].x,rects[i].y,rects[i].width,rects[i].height);
+						cvSetImageROI(&img,rects[i]);
+						printf("after cvSetImageROI\n");
+						cvResize(&img,face);
+						printf("after cvResize\n");
+						cvCvtColor(face,face_gray,CV_RGB2GRAY);
+						printf("after cvCvtColor\n");
 						int label = -1;
 						label = model->predict(Mat(face_gray));
 						label = (label < 1000)?-1:label;
@@ -310,14 +310,15 @@ unsigned int WINAPI Core(VOID* param)
 						tmp.personId.push_back(label);
 
 						//这里要互斥访问
-						memcpy(rects_mapping + i*(sizeof(CvRect) + 4)+4,rects[i],sizeof(CvRect));
+						memcpy(rects_mapping + i*(sizeof(CvRect) + 4)+4,&rects[i],sizeof(CvRect));
 						
 
 					}
 					ReleaseMutex(rects_mapping_mutex);
-
+					cvReleaseImage(&face_gray);
 				}
-
+				if(nullptr!=rects)
+					delete[] rects;
 				
 				//更新cli_map的信息
 				cli_map_mutex.lock();
@@ -423,6 +424,7 @@ unsigned int WINAPI ProcessMessage(VOID* param)
 				printf("Recognition: WM_IMAGE flag1 done\n");
 				WorkInfo tmp;
 				tmp.cli_id = msg.wParam;
+				printf("recognition WM_IMAGE with client id %d\n",tmp.cli_id);
 				tmp.personId.push_back(msg.wParam);
 				Mat img = imdecode(vu,CV_LOAD_IMAGE_COLOR);
 				printf("Recognition: WM_IMAGE flag2 done\n");
@@ -484,18 +486,18 @@ int _tmain(int argc, _TCHAR* argv[]) {
 	sstr >> str;
 	sstr >> server_thread_id;
 
-	file_mapping_mutex = OpenMutex(NULL,FALSE,"file_mapping_mutex");
-	rects_mapping_mutex = OpenMutex(NULL,FALSE,"rects_mapping_mutex");
+	file_mapping_mutex = CreateMutex (NULL,FALSE,"Global\\file_mapping_mutex");
+	rects_mapping_mutex = CreateMutex (NULL,FALSE,"Global\\rects_mapping_mutex");
 
 	if(rects_mapping_mutex == NULL)
 	{
-		printf("failed to open mutex:file_mapping_mutex");
+		printf("failed to open mutex:file_mapping_mutex:%ld\n",GetLastError());
 		PostThreadMessage(server_thread_id,WM_RECOGNITION_ERROR,NULL,NULL);
 		return -1;
 	}
 	if(file_mapping_mutex == NULL)
 	{
-		printf("failed to open mutex:rects_mapping_mutex");
+		printf("failed to open mutex:rects_mapping_mutex:%ld\n",GetLastError());
 		PostThreadMessage(server_thread_id,WM_RECOGNITION_ERROR,NULL,NULL);
 		return -1;
 	}
@@ -509,9 +511,14 @@ int _tmain(int argc, _TCHAR* argv[]) {
 	printf("create core thread \n");
 	//freopen("../train.txt","r",stdin);
     
+	HANDLE wait_load = CreateEvent(NULL,FALSE,FALSE,"recognition_load");
+
     model = createLBPHFaceRecognizer();
     //0model->train(images, labels);
-//	model->load("../FaceData.xml");
+	model->load("../FaceData.xml");
+
+	SetEvent(wait_load);
+
     // The following line predicts the label of a given
     // test image:
 	//model->save("LBP_TrainData.xml");
@@ -541,6 +548,8 @@ int _tmain(int argc, _TCHAR* argv[]) {
 			CloseHandle(get_message_thread);
 			CloseHandle(thread_done);
 			CloseHandle(core_thread_handler);
+			CloseHandle(file_mapping_mutex);
+			CloseHandle(rects_mapping_mutex);
 		//	CloseHandle(file_mapping_op_finish);
 			return 0;
 			break;
@@ -549,6 +558,8 @@ int _tmain(int argc, _TCHAR* argv[]) {
 	CloseHandle(get_message_thread);
 	CloseHandle(thread_done);
 	CloseHandle(core_thread_handler);
+	CloseHandle(file_mapping_mutex);
+	CloseHandle(rects_mapping_mutex);
 //	CloseHandle(file_mapping_op_finish);
     return 0;
 }

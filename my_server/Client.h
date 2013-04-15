@@ -17,7 +17,7 @@ using namespace std;
 class Client:public boost::enable_shared_from_this<Client>
 {
 	static const int MAX_ALIVE_SECOND = 50;
-	static const int PACKAGE_TYPE_LEN = 10;
+	static const int PACKAGE_TYPE_LEN = 20;
 
 public:
 	
