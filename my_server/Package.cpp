@@ -17,7 +17,7 @@ Package::~Package(void)
 
 void Package::reCreateData(int body_len)
 {
-	if(body_len == this->body_len) return ;
+	if(body_len <= this->body_len) return ;
 	delete[] data;
 	this->body_len = body_len;
 	data = new char[HEADER_LEN + this->body_len];

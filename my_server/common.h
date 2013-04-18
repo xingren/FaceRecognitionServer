@@ -38,8 +38,9 @@ const int THREAD_RUN_NUM = 4;
 const int DEFAULT_ASYNC_ACCEPT = 1;
 const int MALE = 0;
 const int FEMALE = 1;
+const int MAX_NAME_LEN = 256;
 
-static int client_id = 0;//for debug
+static int assign_client_id = 0;//for debug
 template<class T>
 void deserialze(char* p,size_t len,T& val)
 {

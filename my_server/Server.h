@@ -32,43 +32,20 @@ public:
 	unsigned int WINAPI Core();
 	void serialize_int(int val,char* out);
 	void deserialize_int(uchar *in,int& val);
-	unsigned int WINAPI write_share_file();
-	unsigned int WINAPI read_result();
+	//unsigned int WINAPI write_share_file();
+	//unsigned int WINAPI read_result();
 
-	PersonData getPersonInDatabase(int client_id);
-
-	struct LessRect
-	{
-		bool operator()(const CvRect&a,const CvRect&b)const
-		{
-			if(a.x < b.x)
-				return true;
-			else if(a.x == b.x)
-			{
-				if(a.y < b.y)
-					return true;
-				else if(a.y == b.y)
-				{
-					if(a.width < b.width)
-						return true;
-					else if(a.width == b.width)
-					{
-						return a.height < b.height;
-					}
-					return false;
-				}
-				return false;
-			}
-			return false;
-		}
-	};
-
+	PersonData get_person_from_database(int client_id);
+	int add_person_to_database(string name,char sex);//返回分配的person ID
+	bool update_person_in_database(int personId,string name,char sex);
+	int get_next_database_insert_id();
+	bool delete_person_from_database(int personId);
 public:
 	io_service& io_service_;
 	ip::tcp::acceptor acceptor;
 	
 	map<int,client_ptr> client_map;
-	map<CvRect,int,LessRect> personId_map;//将检测出来的人脸和数据库中的人的ID关联起来
+	
 	boost::container::vector<Client> reuse_client_can;
 	ip::tcp::endpoint server_addr;
 	bool is_start;
@@ -94,8 +71,8 @@ public:
 	//process and thread sync var
 //	HANDLE file_mapping_op_finish;
 
-	boost::mutex cli_map_mutex;
-	//HANDLE share_mem_mutex;
+	boost::mutex client_map_mutex;
+	
 	HANDLE rects_mapping_mutex;
 	HANDLE file_mapping_mutex;
 

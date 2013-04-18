@@ -78,7 +78,7 @@ Ptr<FaceRecognizer> model;//facerecognition ,use opencv lib
 
 //处理队列
 boost::mutex work_queue_mutex;
-boost::mutex cli_map_mutex;
+boost::mutex client_map_mutex;
 #define IMAGE 0
 #define ADD 1
 #define RECOGNIZE 2
@@ -103,7 +103,7 @@ void serialze(char *out,size_t len,T& val)
 struct WorkInfo
 {
 	int work_type;
-	int cli_id;
+	int client_id;
 	cv::Mat img;//Mat 类本身实现了对内存的动态管理，无需关心多个Mat对象共享同一块数据所带来析构的问题
 	vector<int> personId;
 	vector<CvRect> rects;
@@ -113,7 +113,7 @@ struct WorkInfo
 		this->work_type = a.work_type;
 		this->personId = a.personId;
 		this->rects = a.rects;
-		cli_id = a.cli_id;
+		client_id = a.client_id;
 		return *this;
 	}
 };
@@ -124,7 +124,7 @@ queue<WorkInfo> work_queue;
 vector<WorkInfo> cli_vec;
 
 //相当于session，保存当前客户端的一些数据
-map<int,WorkInfo> cli_map;
+map<int,WorkInfo> client_map;
 
 uchar *file_mapping;
 char *rects_mapping;
@@ -253,7 +253,7 @@ void MyPostThreadMessage(DWORD thread_id,MSG &msg)
 unsigned int WINAPI Core(VOID* param)
 {
 	WorkInfo tmp;
-	int cli_id;
+	int client_id;
 	while(1)
 	{
 		
@@ -269,19 +269,19 @@ unsigned int WINAPI Core(VOID* param)
 		//vw.pop();
 		work_queue_mutex.unlock();
 
-		cli_id = tmp.cli_id;
+		client_id = tmp.client_id;
 		switch(tmp.work_type)
 		{
 		case IMAGE:
 			{
-				printf("recognition with client id %d\n",cli_id);
+				printf("recognition with client id %d\n",client_id);
 
-			//	imshow("test",tmp.img);
-			//	waitKey();
-			//	cv::destroyWindow("test");
+		//		imshow("test",tmp.img);
+		//		waitKey();
+		//		cv::destroyWindow("test");
 
 
-				IplImage img = IplImage(tmp.img);
+				IplImage img = IplImage(tmp.img); //不用Release，因为是共享内存
 				int resCount;
 				CvRect* rects;
 				rects = displaydetection(&img,resCount);
@@ -316,31 +316,43 @@ unsigned int WINAPI Core(VOID* param)
 					}
 					ReleaseMutex(rects_mapping_mutex);
 					cvReleaseImage(&face_gray);
+					cvReleaseImage(&face);
 				}
 				if(nullptr!=rects)
 					delete[] rects;
-				
-				//更新cli_map的信息
-				cli_map_mutex.lock();
-				map<int,WorkInfo>::iterator iter;
-				iter = cli_map.find(cli_id);
-				if(cli_map.end() != iter)
-				{
-					iter->second.img = tmp.img;
-					
-				}
-				else
-				{
-					cli_map.insert(pair<int,WorkInfo>(tmp.cli_id,tmp));
-				}
-
+								
 				cout << "send the dective results to server" << endl;
-				PostThreadMessage(server_thread_id,WM_RESULT_DECTIVE,cli_id,resCount);
-				cli_map_mutex.unlock();
+				PostThreadMessage(server_thread_id,WM_RESULT_DECTIVE,client_id,resCount);
+				
 			}
 			break;
 		case ADD:
 			{
+				printf("Recognition: client id %d:ADD\n",client_id);
+				IplImage img = IplImage(tmp.img);
+
+				//用以model->update的参数
+				vector<Mat> input;
+				vector<int> labels;
+
+		//		imshow("show",tmp.img);
+		//		waitKey(0);
+		//		cv::destroyWindow("show");
+
+				CvRect rect = tmp.rects.at(0);
+				printf("the rect is:%d %d %d %d\n",rect.x,rect.y,rect.width,rect.height);
+
+				cvSetImageROI(&img,rect);
+				IplImage *face_gray = cvCreateImage(cvSize(FACE_WIDTH,FACE_HIGH),img.depth,1);
+				IplImage *face = cvCreateImage(cvSize(FACE_WIDTH,FACE_HIGH),img.depth,img.nChannels);
+				cvResize(&img,face);
+				cvCvtColor(face,face_gray,CV_RGB2GRAY);
+				printf("the person id:%d\n",tmp.personId.at(0));
+				input.push_back(Mat(face_gray,false));
+				labels.push_back(tmp.personId.at(0));
+				model->update(input,labels);
+				cvReleaseImage(&face);
+				cvReleaseImage(&face_gray);
 			}
 			break;
 		}
@@ -423,8 +435,8 @@ unsigned int WINAPI ProcessMessage(VOID* param)
 
 				printf("Recognition: WM_IMAGE flag1 done\n");
 				WorkInfo tmp;
-				tmp.cli_id = msg.wParam;
-				printf("recognition WM_IMAGE with client id %d\n",tmp.cli_id);
+				tmp.client_id = msg.wParam;
+				printf("recognition WM_IMAGE with client id %d\n",tmp.client_id);
 				tmp.personId.push_back(msg.wParam);
 				Mat img = imdecode(vu,CV_LOAD_IMAGE_COLOR);
 				printf("Recognition: WM_IMAGE flag2 done\n");
@@ -434,10 +446,67 @@ unsigned int WINAPI ProcessMessage(VOID* param)
 				//vw.push(tmp);
 				work_queue.push(tmp);
 				work_queue_mutex.unlock();
+
+
+				//更新client_map的信息
+				client_map_mutex.lock();
+				map<int,WorkInfo>::iterator iter;
+				iter = client_map.find(tmp.client_id);
+				if(client_map.end() != iter)
+				{
+					iter->second.img = tmp.img;
+					printf("FaceRecognition:client id %d:change image \n");
+				}
+				else
+				{
+					client_map.insert(pair<int,WorkInfo>(tmp.client_id,tmp));
+					printf("FaceRecognition:client id %d:insert this client id to client_map\n");
+				}
+				client_map_mutex.unlock();
 			}
 			break;
 		case WM_ADD_FACE:
 			{
+
+				printf("Recognition:WM_ADD_FACE\n");
+
+				char content[4+sizeof(CvRect)];
+				WaitForSingleObject(rects_mapping_mutex,INFINITE);
+
+				memcpy(content,rects_mapping,4+sizeof(CvRect));
+
+				ReleaseMutex(rects_mapping_mutex);
+				int personId;
+				memcpy(&personId,content,4);
+				CvRect rect;
+				memcpy(&rect,content+4,sizeof(CvRect));
+				int clientId = msg.wParam;
+				client_map_mutex.lock();
+
+				map<int,WorkInfo>::iterator iter = client_map.find(clientId);
+				client_map_mutex.unlock();
+
+				if(iter == client_map.end())//找不到客户端
+				{
+					PostThreadMessage(server_thread_id,WM_ADD_FACE_FAILED,clientId,personId);
+					
+				}
+				else
+				{
+					
+				WorkInfo work = iter->second;
+				
+				work.work_type = ADD;
+				work.rects.clear();
+				work.rects.push_back(rect);
+				work.personId.clear();
+				work.personId.push_back(personId);
+				work_queue_mutex.lock();
+				work_queue.push(work);
+				work_queue_mutex.unlock();
+				
+				
+				}
 				
 			}
 			break;
@@ -449,14 +518,14 @@ unsigned int WINAPI ProcessMessage(VOID* param)
 		case WM_CLIENT_DISCONNECT:
 			{
 				int id = msg.wParam;
-				map<int,WorkInfo>::iterator iter = cli_map.find(id);
+				map<int,WorkInfo>::iterator iter = client_map.find(id);
 
 
-				if(iter != cli_map.end())
+				if(iter != client_map.end())
 				{
-					cli_map_mutex.lock();
-					cli_map.erase(iter);
-					cli_map_mutex.unlock();
+					client_map_mutex.lock();
+					client_map.erase(iter);
+					client_map_mutex.unlock();
 				}
 				else
 				{

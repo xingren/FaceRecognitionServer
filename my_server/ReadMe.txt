@@ -31,7 +31,7 @@ StdAfx.h, StdAfx.cpp
 
 
 
-Server ---> App 网络包格式：4+10+data ,其中前4字节为包的大小，10字节为包的类型(package type)，data为数据
+Server ---> App 网络包格式：4+10+data ,其中前4字节为包的大小，20字节为包的类型(package type)，data为数据
 package type:
 1.
 RESULT

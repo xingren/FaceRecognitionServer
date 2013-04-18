@@ -253,15 +253,88 @@ unsigned int WINAPI Server::Core()
 					printf("error in post thread,tell recognition recieve image:%ld\n",GetLastError());
 					count ++;
 				}
+
+				if(nullptr!=recv_buf)
+				{
+					delete[] recv_buf;
+				}
 			}
 			break;
-		case WM_ADD_FACE://come from client
+		case WM_MODIFY: //come from Client
 			{
+				//包的格式:包的长度+名字的长度（2）+名字+sex+CvRect
+				size_t size;
 				
+				int clientId = msg.wParam;
+				char* ptr = (char*)msg.lParam;
+				memcpy(&size,ptr,4);
+				int nameLen = 0;
+				string name;
+				char sex;
+				memcpy(&nameLen,ptr+4,2);
+				
+				if(nameLen != 0 && nameLen != size-16-1-2)
+				{
+					cout << "client " << clientId << " MODIFY request has wrong package" << endl;
+					delete[] ptr;
+					break;
+				}
+
+				name = string(ptr+4+2,nameLen);
+				sex = ptr[4+2+nameLen];
+
+				MyRect rect;
+				memcpy(&rect,ptr+4+2+nameLen+1,sizeof(CvRect));
+				cout << "CvRect: " << rect.x << " " << rect.y << " " << rect.width << " " << rect.height << endl;
+				int personId;
+				client_ptr client;
+				client_map_mutex.lock();
+
+				map<int,client_ptr>::iterator client_iter = client_map.find(clientId);
+				
+				if(client_iter == client_map.end())
+				{
+					cout << "client had been removed from client_map !!" << endl;
+					delete[] ptr;
+					break;
+				}
+				client = client_iter->second;
+				client_map_mutex.unlock();
+
+				//找出CvRect对应的personId
+				map<MyRect,int>::iterator iter = client->personId_map.find(rect);
+				//不存在对应的personId
+				if(iter == client->personId_map.end())
+				{
+					cout << "not exist this CvRect: " << rect.x << " " << rect.y << " " << rect.width << " " << rect.height << endl;
+					delete[] ptr;
+					break;
+				}
+				personId = iter->second;
+
+				if(personId == -1) //不在数据库中，需要在FaceRecognition中将添加进人脸数据库
+				{
+					personId = add_person_to_database(name,sex);
+
+					//重新构造包的格式:personId(4) + CvRect
+					size = 4 + sizeof(CvRect);
+					memcpy(ptr,&personId,4);
+					memcpy(ptr+4,&rect,sizeof(CvRect));
+
+					WaitForSingleObject(rects_mapping_mutex,INFINITE);
+
+					memcpy(rects_mapping_buf,ptr,size);
+					PostThreadMessage(recognition_thread_id,WM_ADD_FACE,clientId,NULL);
+					ReleaseMutex(rects_mapping_mutex);
+				}
+				else//更新信息
+				{
+					update_person_in_database(personId,name,sex);
+				}
+				
+				
+				delete[] ptr;
 			}
-			break;
-		case WM_ADD_PERSON:
-			{}
 			break;
 		case WM_GET_RECOGNITION_ID:
 			{
@@ -287,28 +360,41 @@ unsigned int WINAPI Server::Core()
 					vector<PersonData> persons;
 					vector<CvRect> rects;
 					int person_id;
-					CvRect rect;
+					MyRect rect;
 					PersonData p;
+					client_map_mutex.lock();
+					map<int,client_ptr>::iterator client_iter = client_map.find(clientId);
+					
+					if(client_iter == client_map.end())
+					{
+						cout << "client had been removed from client_map !!" << endl;
+						delete[] result;
+						break;;
+					}
+					client_ptr client = client_iter->second;
 					for(int i = 0;i < size ;i++)
 					{
 						memcpy(&person_id,result + i*(sizeof(CvRect) + 4),4);
 						memcpy(&rect,result + i*(sizeof(CvRect)+4)+4,sizeof(CvRect));
-						p = getPersonInDatabase(person_id);
+
+						cout << "CvRect: " << rect.x << " " << rect.y << " " << rect.width << " " << rect.height << endl;
+
+						p = get_person_from_database(person_id);
 						persons.push_back(p);
 						rects.push_back(rect);
-						map<CvRect,int>::iterator iter = personId_map.find(rect);
-						if(iter != personId_map.end())
+						map<MyRect,int>::iterator iter = client->personId_map.find(rect);
+						if(iter != client->personId_map.end())
 						{
 							iter->second = person_id;
 						}
 						else
 						{
-							personId_map.insert(pair<CvRect,int>(rect,person_id));
+							client->personId_map.insert(pair<MyRect,int>(rect,person_id));
 						}
 						printf("the %d rect is:%d,%d,%d,%d\n",i,rect.x,rect.y,rect.width,rect.height);
 						len += 2 + p.name.length() + 1 + sizeof(CvRect);
 					}
-					
+					client_map_mutex.unlock();
 					delete[] result;
 
 					result = nullptr;
@@ -331,19 +417,14 @@ unsigned int WINAPI Server::Core()
 
 				}
 				
-				cli_map_mutex.lock();
+				client_map_mutex.lock();
 				map<int,client_ptr>::iterator iter = client_map.find(clientId);
 				if(iter != client_map.end())
 				{
 					cout << "send recognition result to client: " << clientId  << "result length " << len << endl;
 					iter->second->send_dective_result(result,len+4);
 				}
-				cli_map_mutex.unlock();
-			}
-			break;
-		case WM_RESULT_FIND://come from recognition thread
-			{
-				
+				client_map_mutex.unlock();
 			}
 			break;
 		case WM_RECOGNITION_ERROR:
@@ -355,7 +436,7 @@ unsigned int WINAPI Server::Core()
 		case WM_CLIENT_DISCONNECT:
 			{
 				int id = msg.wParam;
-				cli_map_mutex.lock();
+				client_map_mutex.lock();
 				
 				map<int,client_ptr>::iterator iter;
 				iter = client_map.find(id);
@@ -367,8 +448,14 @@ unsigned int WINAPI Server::Core()
 				{
 					printf("client didn't be deleted\n");
 				}
-				cli_map_mutex.unlock();
+				client_map_mutex.unlock();
 				PostThreadMessage(recognition_thread_id,WM_CLIENT_DISCONNECT,id,NULL);
+			}
+			break;
+		case WM_ADD_FACE_FAILED:
+			{
+			int personId = msg.lParam;
+			delete_person_from_database(personId);
 			}
 			break;
 		default:
@@ -416,7 +503,7 @@ void Server::accept_handler(const boost::system::error_code& ec,client_ptr& clie
 	if(!ec)
 	{
 		
-		std::cout << "logger: client connect" << std::endl;
+		std::cout << "logger: client "<< client->id <<" connect" << std::endl;
 		std::cout << client->cli_socket.remote_endpoint().address() << std::endl;
 		client->start();
 		start_next_accept();
@@ -440,7 +527,7 @@ void Server::set_server_addr(unsigned int port,std::string ip)
 }
 
 
-PersonData Server::getPersonInDatabase(int person_id)
+PersonData Server::get_person_from_database(int person_id)
 {
 	PersonData p;
 	p.id = person_id;
@@ -452,7 +539,7 @@ PersonData Server::getPersonInDatabase(int person_id)
 	sprintf(query,"select * from person where Id=%d",person_id);
 	MYSQL_RES* result = nullptr;
 	
-	char col[10][20];
+	
 	if(!mysql_query(sql_con,query))
 	{
 		result = mysql_store_result(sql_con);
@@ -478,6 +565,84 @@ PersonData Server::getPersonInDatabase(int person_id)
 	return p;
 }
 
+int Server::add_person_to_database(string name,char sex)
+{
+	int personId = -1;
+
+	string query = "insert into person(name,sex) values('" +  name + "'," + (sex == 1?"1":"0") + ")";
+	
+	MYSQL_RES* result = nullptr;
+	mysql_query(sql_con,query.c_str());
+
+	query = "select LAST_INSERT_ID()";
+	if(!mysql_query(sql_con,query.c_str()))
+	{
+		result = mysql_store_result(sql_con);
+		if(nullptr != result)
+		{
+			MYSQL_ROW row = nullptr;
+			row = mysql_fetch_row(result);
+			
+			personId = atoi(row[0]);
+			
+		}
+	}
+	if(personId == -1)
+		personId = get_next_database_insert_id() - 1;
+	return personId;
+}
+
+bool Server::update_person_in_database(int personId,string name,char sex)
+{
+	string query;
+	//sprintf(query,"update person set name='%s',sex=%d where id=%d",name.c_str(),sex,personId);
+	char id[12];
+	sprintf(id,"%d",personId);
+	query = "update person set name='" + name + "',sex=" + (sex == 1?"1":"0") + " where id=" + id;
+	
+	MYSQL_RES* result = nullptr;
+	
+	mysql_query(sql_con,query.c_str());
+
+	return true;
+}
+
+int Server::get_next_database_insert_id()
+{
+	int personId;
+
+	char query[40] = "show table status like 'person'";//查看表的维护信息，可以找到Auto_increment对应的字段的下一个值
+	MYSQL_RES* result = nullptr;
+	
+	if(!mysql_query(sql_con,query))
+	{
+		result = mysql_store_result(sql_con);
+		if(nullptr != result)
+		{
+			MYSQL_ROW row = nullptr;
+			row = mysql_fetch_row(result);
+			int field_num = mysql_num_fields(result);
+			MYSQL_FIELD* fds=  mysql_fetch_fields(result);
+			int i;
+			
+			for(i = 0;i<field_num;i++)
+			{
+				
+				if(strcmp(fds[i].name,"Auto_increment") == 0)
+					break;
+			}
+			personId = atoi(row[i]);
+		}
+	}
+	return personId;
+}
+
+bool Server::delete_person_from_database(int personId)
+{
+	char query[50];
+	sprintf(query,"delete from person where id =%d",1009);
+	return true;
+}
 
 //unsigned int WINAPI Server::write_share_file()
 //{
