@@ -11,6 +11,7 @@ Client::Client(io_service& io,unsigned long server_thread_id_):
 	id = ++assign_client_id;
 	recv_buf = recv_file = nullptr;
 	isDestruct = false;
+	
 	cout << "Client "<< id <<" Is construct!!!" << endl;
 }
 

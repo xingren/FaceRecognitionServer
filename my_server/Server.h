@@ -67,7 +67,7 @@ public:
 	HANDLE hResultMapping;
 	void* file_mapping_buf;
 	void* rects_mapping_buf;
-
+	DWORD controler;
 	//process and thread sync var
 //	HANDLE file_mapping_op_finish;
 

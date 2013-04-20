@@ -48,10 +48,15 @@ DWORD main_thread_id;
 HANDLE hFileMapping;
 HANDLE hResultMapping;
 DWORD message_thread_id;
+DWORD save_thread_id;
+HANDLE CoreExitEvent;
+
 
 HANDLE rects_mapping_mutex;//对检测结果的共享区域互斥访问
 HANDLE file_mapping_mutex;//对待检测图片的共享区域互斥访问
 
+
+bool core_exit = false;
 
 #endif
 #include "../message_types.h"
@@ -60,10 +65,6 @@ HANDLE file_mapping_mutex;//对待检测图片的共享区域互斥访问
 
 using namespace cv;
 using namespace std;
-
-
-
-
 
 
 #define FACE_WIDTH 92
@@ -79,9 +80,7 @@ Ptr<FaceRecognizer> model;//facerecognition ,use opencv lib
 //处理队列
 boost::mutex work_queue_mutex;
 boost::mutex client_map_mutex;
-#define IMAGE 0
-#define ADD 1
-#define RECOGNIZE 2
+
 
 template<class T>
 void deserialze(char* p,size_t len,T& val)
@@ -98,6 +97,15 @@ void serialze(char *out,size_t len,T& val)
 	int n= min(len,size);
 	memcpy(out,&val,n);
 }
+boost::mutex _mutex;
+void Print_S(char*info )
+{
+	_mutex.lock();
+	cout << info << endl;
+	_mutex.unlock();
+}
+
+
 
 
 struct WorkInfo
@@ -254,7 +262,8 @@ unsigned int WINAPI Core(VOID* param)
 {
 	WorkInfo tmp;
 	int client_id;
-	while(1)
+	
+	while(!core_exit)
 	{
 		
 		work_queue_mutex.lock();
@@ -272,7 +281,7 @@ unsigned int WINAPI Core(VOID* param)
 		client_id = tmp.client_id;
 		switch(tmp.work_type)
 		{
-		case IMAGE:
+		case WM_IMAGE:
 			{
 				printf("recognition with client id %d\n",client_id);
 
@@ -326,7 +335,7 @@ unsigned int WINAPI Core(VOID* param)
 				
 			}
 			break;
-		case ADD:
+		case WM_ADD:
 			{
 				printf("Recognition: client id %d:ADD\n",client_id);
 				IplImage img = IplImage(tmp.img);
@@ -357,6 +366,8 @@ unsigned int WINAPI Core(VOID* param)
 			break;
 		}
 	}
+	SetEvent(CoreExitEvent);
+	cout << "Core Thread exit" << endl;
 	return 0;
 }
 
@@ -441,7 +452,7 @@ unsigned int WINAPI ProcessMessage(VOID* param)
 				Mat img = imdecode(vu,CV_LOAD_IMAGE_COLOR);
 				printf("Recognition: WM_IMAGE flag2 done\n");
 				tmp.img = img;
-				tmp.work_type = IMAGE;
+				tmp.work_type = WM_IMAGE;
 				work_queue_mutex.lock();
 				//vw.push(tmp);
 				work_queue.push(tmp);
@@ -496,7 +507,7 @@ unsigned int WINAPI ProcessMessage(VOID* param)
 					
 				WorkInfo work = iter->second;
 				
-				work.work_type = ADD;
+				work.work_type = WM_ADD;
 				work.rects.clear();
 				work.rects.push_back(rect);
 				work.personId.clear();
@@ -512,7 +523,10 @@ unsigned int WINAPI ProcessMessage(VOID* param)
 			break;
 		case WM_EXIT:
 			{
+				core_exit = true;
+				WaitForSingleObject(CoreExitEvent,10000);
 				PostThreadMessage(main_thread_id,WM_EXIT,NULL,NULL);
+				return 0;
 			}
 			break;
 		case WM_CLIENT_DISCONNECT:
@@ -529,21 +543,43 @@ unsigned int WINAPI ProcessMessage(VOID* param)
 				}
 				else
 				{
-					printf("recognition: not exist this id: %d",id);
+					cout << "recognition not exist this id:" << id << endl;
 				}
 			}
 			break;
 		default:
 			{
-				printf("undefine message type\n");
+				cout << "undefine message type in process thread" << endl;
 			}
 		}
 	}
+	cout << "process message thread exit" << endl;
 	return 0;
 }
 
 
+unsigned int WINAPI SaveThread(VOID* PVOID)
+{
+	MSG msg;
+	BOOL bRet;
+	while((bRet = GetMessage(&msg,NULL,NULL,NULL))>0)
+	{
+		TranslateMessage(&msg);
+		switch(msg.message)
+		{
+		case WM_SAVE:
+			model->save("../FaceData.xml");
+			break;
+		case WM_EXIT:
+			model->save("../FaceData.xml");
+			return 0;
+			break;
+		}
 
+	}
+	cout << "Save Thread Exit" << endl;
+	return 0;
+}
 
 int _tmain(int argc, _TCHAR* argv[]) {
 	SetConsoleTitle("recognition");
@@ -570,10 +606,13 @@ int _tmain(int argc, _TCHAR* argv[]) {
 		PostThreadMessage(server_thread_id,WM_RECOGNITION_ERROR,NULL,NULL);
 		return -1;
 	}
+	CoreExitEvent = CreateEvent(NULL,FALSE,FALSE,NULL);
 	main_thread_id = GetCurrentThreadId();
 	thread_done = CreateEvent(NULL,FALSE,FALSE,"build-thread-queue");
 	HANDLE get_message_thread = (HANDLE)_beginthreadex(NULL,NULL,ProcessMessage,NULL,NULL,(unsigned int*)&message_thread_id);
 	WaitForSingleObject(thread_done,INFINITE);
+	
+	HANDLE save_add_face_thread = (HANDLE)_beginthreadex(NULL,NULL,SaveThread,NULL,NULL,(unsigned int*)save_thread_id);
 	printf("create ProcessMessage \n");
 	DWORD core_thread_id;
 	HANDLE core_thread_handler = (HANDLE)_beginthreadex(NULL,NULL,Core,NULL,NULL,(unsigned int*)&core_thread_id);
@@ -613,22 +652,31 @@ int _tmain(int argc, _TCHAR* argv[]) {
 		switch(msg.message)
 		{
 		case WM_EXIT:
-			
+		
+			model->save("../FaceData.xml");
+
+
 			CloseHandle(get_message_thread);
 			CloseHandle(thread_done);
 			CloseHandle(core_thread_handler);
 			CloseHandle(file_mapping_mutex);
 			CloseHandle(rects_mapping_mutex);
-		//	CloseHandle(file_mapping_op_finish);
+			CloseHandle(save_add_face_thread);
+			CloseHandle(CoreExitEvent);
+			CloseHandle(hFileMapping);
+			CloseHandle(hResultMapping);
 			return 0;
 			break;
 		}
 	}
+	model->save("../FaceData.xml");
 	CloseHandle(get_message_thread);
 	CloseHandle(thread_done);
 	CloseHandle(core_thread_handler);
 	CloseHandle(file_mapping_mutex);
 	CloseHandle(rects_mapping_mutex);
-//	CloseHandle(file_mapping_op_finish);
+	CloseHandle(save_add_face_thread);
+	CloseHandle(hFileMapping);
+	CloseHandle(hResultMapping);
     return 0;
 }

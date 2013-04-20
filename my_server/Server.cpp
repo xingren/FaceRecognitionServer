@@ -3,6 +3,25 @@
 
 Server::Server(io_service &io,unsigned int port,std::string ip):io_service_(io),acceptor(io),is_start(false),sql_con(nullptr)
 {
+
+	controler = 0;
+	char* command_line = GetCommandLine();
+	if(strcmp(command_line,"") != 0)
+	{
+		stringstream sstr(command_line);
+		string str;
+		//printf("%s\n",command_line);
+		cout << "command line:" << command_line << endl;
+		sstr >> str;
+		sstr >> controler;
+		cout << "controler:" << controler << endl;
+		
+	}
+	else
+	{
+		printf("no common line\n");
+	}
+
 	set_server_addr(port,ip);
 	CoreStartEvent = CreateEvent(NULL,FALSE,FALSE,"Core-Start-Event");
 
@@ -105,7 +124,7 @@ Server::Server(io_service &io,unsigned int port,std::string ip):io_service_(io),
 		return;
 	}
 
-	if(!CreateProcess(NULL,command,NULL,NULL,NULL,NULL,NULL,NULL,&si,&recognition_process_info))
+	if(!CreateProcess(NULL,command,NULL,NULL,NULL,CREATE_NEW_CONSOLE,NULL,NULL,&si,&recognition_process_info))
 	{
 		printf("failed to start FaceRecognition Process\n");
 		return;
@@ -122,7 +141,7 @@ Server::Server(io_service &io,unsigned int port,std::string ip):io_service_(io),
 		std::cout << "can not start the server" <<  std::endl;
 		
 	}
-	
+
 	is_start = true;
 }
 
@@ -339,6 +358,11 @@ unsigned int WINAPI Server::Core()
 		case WM_GET_RECOGNITION_ID:
 			{
 				recognition_thread_id = msg.wParam;
+				cout << "controler id:" << controler << endl;
+				if(controler != 0)
+				{
+					PostThreadMessage(controler,WM_SERVER_ID,core_thread_id,recognition_thread_id);
+				}
 				printf("Get Recognition ID\n");
 			}
 			break;
@@ -454,9 +478,15 @@ unsigned int WINAPI Server::Core()
 			break;
 		case WM_ADD_FACE_FAILED:
 			{
-			int personId = msg.lParam;
-			delete_person_from_database(personId);
+				int personId = msg.lParam;
+				delete_person_from_database(personId);
 			}
+			break;
+		case WM_EXIT:
+			PostThreadMessage(recognition_thread_id,WM_EXIT,NULL,NULL);
+			io_service_.stop();
+			is_start = false;
+			
 			break;
 		default:
 			{

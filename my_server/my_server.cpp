@@ -16,6 +16,8 @@ using namespace boost::asio;
 int main()
 {
 	SetConsoleTitle("send");
+
+
 	io_service service;
 	Server server(service,PORT);
 	server.start();
