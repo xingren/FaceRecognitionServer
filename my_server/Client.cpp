@@ -163,6 +163,7 @@ void Client::recv_file_handler(const boost::system::error_code& ec,size_t bytes_
 {
 	if(!ec)
 	{
+		personId_map.clear();
 		uchar *image = new uchar[bytes_transferred+4];
 		memcpy(image,&bytes_transferred,4);
 		memcpy(image+4,recv_package.get_data(),bytes_transferred);

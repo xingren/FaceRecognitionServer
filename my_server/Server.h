@@ -36,10 +36,12 @@ public:
 	//unsigned int WINAPI read_result();
 
 	PersonData get_person_from_database(int client_id);
-	int add_person_to_database(string name,char sex);//返回分配的person ID
+	int add_person_to_database(string paper_id,string name,char sex);//返回分配的person ID
 	bool update_person_in_database(int personId,string name,char sex);
 	int get_next_database_insert_id();
 	bool delete_person_from_database(int personId);
+	int find_person_id_in_database(string paper_id);
+	string AnsiToUTF8(const char src[],int len);//将GBK编码转换成UTF8
 public:
 	io_service& io_service_;
 	ip::tcp::acceptor acceptor;

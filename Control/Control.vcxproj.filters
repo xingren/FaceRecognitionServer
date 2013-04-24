@@ -29,7 +29,7 @@
     <ClCompile Include="stdafx.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
-    <ClCompile Include="Control.cpp">
+    <ClCompile Include="Controler.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
   </ItemGroup>

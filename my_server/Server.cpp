@@ -281,29 +281,31 @@ unsigned int WINAPI Server::Core()
 			break;
 		case WM_MODIFY: //come from Client
 			{
-				//包的格式:包的长度+名字的长度（2）+名字+sex+CvRect
+				//包的格式:包的长度+//paper_id的长度(2) + paper_id + name的长度(2) + name + sex(1) + CvRect 
 				size_t size;
 				
 				int clientId = msg.wParam;
 				char* ptr = (char*)msg.lParam;
 				memcpy(&size,ptr,4);
 				int nameLen = 0;
-				string name;
+				int paper_id_len = 0;
+				string name,paper_id;
 				char sex;
-				memcpy(&nameLen,ptr+4,2);
+				memcpy(&paper_id_len,ptr+4,2);
+				memcpy(&nameLen,ptr+4 +2+ paper_id_len,2);
 				
-				if(nameLen != 0 && nameLen != size-16-1-2)
+				if(nameLen != 0 && nameLen != size-16-1-2-paper_id_len-2)
 				{
 					cout << "client " << clientId << " MODIFY request has wrong package" << endl;
 					delete[] ptr;
 					break;
 				}
-
-				name = string(ptr+4+2,nameLen);
-				sex = ptr[4+2+nameLen];
+				paper_id.append(ptr+4+2,paper_id_len);
+				name.append(ptr+4+2+paper_id_len+2,nameLen);
+				sex = ptr[4+2+paper_id_len+2+nameLen];
 
 				MyRect rect;
-				memcpy(&rect,ptr+4+2+nameLen+1,sizeof(CvRect));
+				memcpy(&rect,ptr+4+2+nameLen+2+paper_id_len+1,sizeof(CvRect));
 				cout << "CvRect: " << rect.x << " " << rect.y << " " << rect.width << " " << rect.height << endl;
 				int personId;
 				client_ptr client;
@@ -321,34 +323,67 @@ unsigned int WINAPI Server::Core()
 				client_map_mutex.unlock();
 
 				//找出CvRect对应的personId
-				map<MyRect,int>::iterator iter = client->personId_map.find(rect);
+				map<MyRect,int>::iterator id_iter = client->personId_map.find(rect);
 				//不存在对应的personId
-				if(iter == client->personId_map.end())
+				if(id_iter == client->personId_map.end())
 				{
 					cout << "not exist this CvRect: " << rect.x << " " << rect.y << " " << rect.width << " " << rect.height << endl;
 					delete[] ptr;
 					break;
 				}
-				personId = iter->second;
+				personId = id_iter->second;
 
-				if(personId == -1) //不在数据库中，需要在FaceRecognition中将添加进人脸数据库
+				if(personId == -1) //未配对上人脸数据库的
 				{
-					personId = add_person_to_database(name,sex);
+					//先在人信息数据中查找对应的paper_id
+					personId = find_person_id_in_database(paper_id);//没有该证件号的人
+					if(personId  == -1)
+					{
+						personId = add_person_to_database(paper_id,name,sex);
+						
 
-					//重新构造包的格式:personId(4) + CvRect
-					size = 4 + sizeof(CvRect);
-					memcpy(ptr,&personId,4);
-					memcpy(ptr+4,&rect,sizeof(CvRect));
-
+						
+					}
+					else //有该证件号的人，更新信息
+					{
+						update_person_in_database(personId,name,sex);
+						
+						
+					}
+					//并且通知Recognition加人脸加入数据库中
+					//personId(4) + CvRect
 					WaitForSingleObject(rects_mapping_mutex,INFINITE);
-
-					memcpy(rects_mapping_buf,ptr,size);
+					memcpy(rects_mapping_buf,&personId,4);
+					memcpy((char *)rects_mapping_buf + 4,&rect,sizeof(rect));
 					PostThreadMessage(recognition_thread_id,WM_ADD_FACE,clientId,NULL);
 					ReleaseMutex(rects_mapping_mutex);
 				}
 				else//更新信息
 				{
-					update_person_in_database(personId,name,sex);
+					int tmpId = find_person_id_in_database(paper_id);
+					if(tmpId == personId)//是同一人
+						update_person_in_database(personId,name,sex);
+					else//不是同一人，识别错误,
+					{
+						if(tmpId != -1)
+						{
+							//更新
+							update_person_in_database(tmpId,name,sex);
+						}
+						else //是一个新的人
+						{
+							tmpId = add_person_to_database(paper_id,name,sex);
+
+						}
+						//更正Client类里的personId_map
+						id_iter->second = tmpId;
+						//将该人脸加入人脸数据库中
+						WaitForSingleObject(rects_mapping_mutex,INFINITE);
+						memcpy(rects_mapping_buf,&tmpId,4);
+						memcpy((char *)rects_mapping_buf + 4,&rect,sizeof(rect));
+						PostThreadMessage(recognition_thread_id,WM_ADD_FACE,clientId,NULL);
+						ReleaseMutex(rects_mapping_mutex);
+					}
 				}
 				
 				
@@ -416,7 +451,7 @@ unsigned int WINAPI Server::Core()
 							client->personId_map.insert(pair<MyRect,int>(rect,person_id));
 						}
 						printf("the %d rect is:%d,%d,%d,%d\n",i,rect.x,rect.y,rect.width,rect.height);
-						len += 2 + p.name.length() + 1 + sizeof(CvRect);
+						len += 2 + p.paper_id.length() +  2 + p.name.length() + 1 + sizeof(CvRect);
 					}
 					client_map_mutex.unlock();
 					delete[] result;
@@ -429,14 +464,19 @@ unsigned int WINAPI Server::Core()
 					int &nlen = person_id;
 					for(int i = 0;i < size;i++)
 					{
-						//这里的id是name的长度
-						nlen = persons.at(i).name.length();
+						nlen = persons.at(i).paper_id.length();
 						memcpy(ptr,&nlen,2);
-						memcpy(ptr+2,persons.at(i).name.c_str(),nlen);
-						memcpy(ptr+2+nlen,&persons.at(i).sex,1);
-						memcpy(ptr + 2 + nlen + 1,&rects.at(i),sizeof(CvRect));
+						memcpy(ptr + 2,persons.at(i).paper_id.c_str(),nlen);
+						nlen = persons.at(i).name.length();
+						memcpy(ptr + 2 + persons.at(i).paper_id.length(),&nlen,2);
+						memcpy(ptr+2 + persons.at(i).paper_id.length() + 2,
+							persons.at(i).name.c_str(),
+							nlen);
+						memcpy(ptr+2+nlen + 2 + persons.at(i).paper_id.length()
+							,&persons.at(i).sex,1);
+						memcpy(ptr +2 + persons.at(i).paper_id.length()+ 2 + nlen + 1,&rects.at(i),sizeof(CvRect));
 						printf("%d the sex is %d,%d\n",i,persons.at(i).sex,char(*(ptr+2+nlen)));
-						ptr += 2 + nlen + 1 + sizeof(CvRect);
+						ptr += 2+ persons.at(i).paper_id.length() + 2 + nlen + 1 + sizeof(CvRect);
 					}
 
 				}
@@ -584,7 +624,9 @@ PersonData Server::get_person_from_database(int person_id)
 			{
 				for(int i = 0;i<field_num;i++)
 				{
-					if(strcmp(fds[i].name,"name") == 0)
+					if(strcmp(fds[i].name,"paper_id") == 0)
+						p.paper_id = row[i];
+					else if(strcmp(fds[i].name,"name") == 0)
 						p.name = row[i];
 					else if(strcmp(fds[i].name,"sex")==0)
 						p.sex = atoi(row[i]);
@@ -595,12 +637,14 @@ PersonData Server::get_person_from_database(int person_id)
 	return p;
 }
 
-int Server::add_person_to_database(string name,char sex)
+int Server::add_person_to_database(string paper_id,string name,char sex)
 {
 	int personId = -1;
 
-	string query = "insert into person(name,sex) values('" +  name + "'," + (sex == 1?"1":"0") + ")";
+	string query = "insert into person(paper_id,name,sex) values('" + paper_id +"','" +  name + "'," + (sex == 1?"1":"0") + ")";
 	
+	//query = AnsiToUTF8(query.c_str(),query.length());
+
 	MYSQL_RES* result = nullptr;
 	mysql_query(sql_con,query.c_str());
 
@@ -629,7 +673,7 @@ bool Server::update_person_in_database(int personId,string name,char sex)
 	char id[12];
 	sprintf(id,"%d",personId);
 	query = "update person set name='" + name + "',sex=" + (sex == 1?"1":"0") + " where id=" + id;
-	
+	//query = AnsiToUTF8(query.c_str(),query.length());
 	MYSQL_RES* result = nullptr;
 	
 	mysql_query(sql_con,query.c_str());
@@ -674,60 +718,70 @@ bool Server::delete_person_from_database(int personId)
 	return true;
 }
 
-//unsigned int WINAPI Server::write_share_file()
-//{
-//	MSG msg;
-//	PeekMessage(&msg,NULL,WM_USER,WM_USER,PM_NOREMOVE);
-//	SetEvent(wrEvent);
-//	BOOL bRet;
-//	while((bRet = GetMessage(&msg,NULL,0,0)) > 0)
-//	{
-//		TranslateMessage(&msg);
-//		switch(msg.message                                                                                                                                                                                                                             )
-//		{
-//		case WM_IMAGE:
-//			{
-//				char *p = (char*)msg.wParam;
-//				size_t size = (size_t)msg.lParam;
-//				char *pbuf = (char*)MapViewOfFile(hFileMapping,FILE_MAP_WRITE,0,0,IPC_BUFF_SIZE);
-//				WaitForSingleObject(share_mem_empty,INFINITE);
-//				WaitForSingleObject(share_mem_mutex,INFINITE);
-//
-//				memcpy(pbuf,p,size);
-//
-//				ReleaseMutex(share_mem_mutex);
-//				ReleaseSemaphore(share_mem_mutex,1,NULL);
-//			}
-//			break;
-//		}
-//	}
-//
-//	return 0;
-//}
-//
-//unsigned int Server::read_result()
-//{
-//	MSG msg;
-//	PeekMessage(&msg,NULL,WM_USER,WM_USER,PM_NOREMOVE);
-//	SetEvent(wrEvent);
-//	BOOL bRet;
-//	while((bRet = GetMessage(&msg,NULL,0,0)) > 0)
-//	{
-//		TranslateMessage(&msg);
-//		switch(msg.message)
-//		{
-//		case WM_RESULT:
-//			{
-//				char *p = (char*)msg.wParam;
-//				char *pbuf = (char*)MapViewOfFile(hFileMapping,FILE_MAP_WRITE,0,0,IPC_BUFF_SIZE);
-//				WaitForSingleObject(share_mem_empty,INFINITE);
-//				WaitForSingleObject(share_mem_mutex,INFINITE);
-//				ReleaseMutex(share_mem_mutex);
-//				ReleaseSemaphore(share_mem_mutex,1,NULL);
-//			}
-//			break;
-//		}
-//	}
-//
-//	return 0;
-//}
+string Server::AnsiToUTF8(const char src[],int len)
+{
+	int size = MultiByteToWideChar(CP_ACP,0,src,len,NULL,0);
+	wchar_t *dst = new wchar_t[size];
+	if(!MultiByteToWideChar(CP_ACP,0,src,len,dst,size))
+	{
+		delete[] dst;
+		return "";
+	}
+
+	//unicode to utf8
+	string str;
+	char s[6];
+	for(int i = 0;i < size;i++)
+	{
+		if(dst[i] >=0 && dst[i] <0x80)
+		{
+			str.push_back(dst[i]);
+		}
+		else if(dst[i] >= 0x80 && dst[i] < 0x800)
+		{
+			s[1] = dst[i] & 0x3f | 0x80;
+			s[0] = (dst[i] >> 6) | 0xc0;
+			str.append(s,2);
+		}
+		else if(dst[i] >= 0x800 && dst[i] < 0x10000)
+		{
+			s[2] = dst[i] & 0x3f | 0x80;
+			s[1] = (dst[i] >> 6) & 0x3f | 0x80;
+			s[0] = (dst[i] >> 12) & 0x3f | 0xe0;
+			str.append(s,3);
+		}
+		else if(dst[i] >= 0x10000 && dst[i] < 0x200000)
+		{}
+		else if(dst[i] >= 0x200000 && dst[i] < 0x4000000)
+		{}
+		else if(dst[i] >= 0x4000000 && dst[i] < 0x80000000)
+		{}
+		else //error
+		{
+		}
+	}
+	delete[] dst;
+	return str;
+}
+
+int Server::find_person_id_in_database(string paper_id)
+{
+	string query;
+	query="select person.id from person where paper_id = '" + paper_id + "'";
+	int id = -1;
+	MYSQL_RES* result;
+	if(!mysql_query(sql_con,query.c_str()))
+	{
+		result = mysql_store_result(sql_con);
+		MYSQL_ROW row = nullptr;
+		row = mysql_fetch_row(result);
+		if(row == nullptr)
+		{
+			return -1;
+		}
+		id = atoi(row[0]);
+
+	}
+	mysql_free_result(result);
+	return id > 0?id:-1;
+}

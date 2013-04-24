@@ -14,7 +14,8 @@ public:
 	int id;
 	int sex;
 	std::string name;
-	std::string school;
+	std::string paper_id;
+	PersonData(char data[]);
 	cv::Mat img;
 };
 
