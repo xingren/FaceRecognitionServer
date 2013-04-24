@@ -38,7 +38,8 @@ RESULT
 data format:
 {
 data length
-
+paper_id length
+paper_id
 name length
 name
 sex
