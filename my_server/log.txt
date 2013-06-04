@@ -1,0 +1,8 @@
+20130519T163829: Client construct: Client 1 is construct
+
+20130519T163902: Client construct: Client 2 is construct
+
+201320130519T164220: Server Core: send recognition result to client: 2 result length 25
+
+20130519T164426: Server Core: send recognition result to client: 2 result length 193
+

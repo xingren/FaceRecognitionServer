@@ -15,7 +15,7 @@ using namespace boost::asio;
 
 int main()
 {
-	SetConsoleTitle("send");
+	SetConsoleTitle("my_server");
 
 
 	io_service service;
@@ -29,9 +29,6 @@ int main()
 	}
 	while(server.is_start)
 	{
-		cin >> str;
-		if(str == "exit")
-			break;
 	}
 	
 

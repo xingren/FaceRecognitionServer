@@ -28,7 +28,7 @@
 
 //stl
 #include <vector>
-
+#include "my_logger.h"
 
 #define DEFAULT_IP "127.0.0.1"
 #define PORT 3598
@@ -41,12 +41,23 @@ const int FEMALE = 1;
 const int MAX_NAME_LEN = 256;
 
 static int assign_client_id = 0;//for debug
-template<class T>
-void deserialze(char* p,size_t len,T& val)
+static my_logger logger;
+
+static boost::mutex print_mutex;
+
+static void print_line_by_lock(const char text[])
 {
-	size_t size = sizeof(T);
-	int n = min(len,size);
-	memcpy(&val,p,n);
+	print_mutex.lock();
+	cout << text << endl;
+	print_mutex.unlock();
 }
+
+static void print_by_lock(const char text[])
+{
+	print_mutex.lock();
+	cout << text;
+	print_mutex.unlock();
+}
+
 #endif
 

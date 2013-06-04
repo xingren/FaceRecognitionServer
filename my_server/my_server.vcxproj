@@ -80,6 +80,7 @@
     <ClInclude Include="..\message_types.h" />
     <ClInclude Include="Client.h" />
     <ClInclude Include="common.h" />
+    <ClInclude Include="my_logger.h" />
     <ClInclude Include="Package.h" />
     <ClInclude Include="PersonData.h" />
     <ClInclude Include="Server.h" />
@@ -88,6 +89,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Client.cpp" />
+    <ClCompile Include="my_logger.cpp" />
     <ClCompile Include="my_server.cpp" />
     <ClCompile Include="Package.cpp" />
     <ClCompile Include="PersonData.cpp" />

@@ -39,6 +39,8 @@ unsigned int WINAPI ProcessMessage(VOID* pVOID)
 
 int _tmain(int argc, _TCHAR* argv[])
 {
+	SetConsoleTitle("Controler");
+
 	DWORD process_message_thread_id = 0;
 	HANDLE process_message_thread;
 	wait = CreateEvent(NULL,FALSE,FALSE,NULL);

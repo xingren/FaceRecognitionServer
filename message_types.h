@@ -22,3 +22,4 @@
 #define WM_RECOGNIZE WM_USER + 16
 #define WM_SAVE WM_USER + 17
 #define WM_SERVER_ID WM_USER + 19
+

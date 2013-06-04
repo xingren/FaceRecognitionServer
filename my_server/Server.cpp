@@ -1,6 +1,8 @@
 #include"stdafx.h"
 #include"Server.h"
 
+char Server::text[1000]="";
+
 Server::Server(io_service &io,unsigned int port,std::string ip):io_service_(io),acceptor(io),is_start(false),sql_con(nullptr)
 {
 
@@ -11,15 +13,21 @@ Server::Server(io_service &io,unsigned int port,std::string ip):io_service_(io),
 		stringstream sstr(command_line);
 		string str;
 		//printf("%s\n",command_line);
-		cout << "command line:" << command_line << endl;
+		sprintf_s(text,"command line:%s",command_line);
+		print_line_by_lock(text);
+		
+		//cout << "command line:" << command_line << endl;
 		sstr >> str;
 		sstr >> controler;
-		cout << "controler:" << controler << endl;
+		//cout << "controler:" << controler << endl;
+		sprintf_s(text,"controler:%ld",controler);
+		print_line_by_lock(text);
 		
 	}
 	else
 	{
-		printf("no common line\n");
+		//printf("no command line\n");
+		print_line_by_lock("no command line");
 	}
 
 	set_server_addr(port,ip);
@@ -30,48 +38,76 @@ Server::Server(io_service &io,unsigned int port,std::string ip):io_service_(io),
 
 	if(sql_con == NULL)
 	{
-		printf("can't init MYSQL* \n");
+		//printf("can't init MYSQL* \n");
+		print_line_by_lock("can't init MYSQL*");
+		logger.PrintLog("Server construct","can't init MYSQL*");
 		return ;
 	}
 	if(!mysql_real_connect(sql_con,"localhost","root","123","rui",0,NULL,0))
 	{
-		printf("failed to connect mariadb\n");
+		//printf("failed to connect mariadb\n");
+		print_line_by_lock("failed to connect mariadb");
+		logger.PrintLog("Server construct","failed to connect mariadb");
 		return;
 	}
 	//mysql_query(&sql_con,"SET NAMES UTF8");
 
 
 	//进程通信，线程同步操作初始化
-	//share_mem_mutex = CreateMutex(NULL,FALSE,"share-mem-mutex");
-	/*share_mem_full = CreateSemaphore(NULL,0,async_run_num,NULL);
-	share_mem_empty = CreateSemaphore(NULL,async_run_num,async_run_num,NULL);*/
+
 	hFileMapping = CreateFileMapping(INVALID_HANDLE_VALUE,NULL,PAGE_READWRITE,0,IPC_BUFF_SIZE,"file-mapping");
 	hResultMapping = CreateFileMapping(INVALID_HANDLE_VALUE,NULL,PAGE_READWRITE,0,IPC_BUFF_SIZE,"result-mapping");
+	hAddMapping = CreateFileMapping(INVALID_HANDLE_VALUE,NULL,PAGE_READWRITE,0,IPC_BUFF_SIZE,"add-mapping");
 	file_mapping_buf = (char *)MapViewOfFile(hFileMapping,FILE_MAP_ALL_ACCESS,0,0,0);
 	rects_mapping_buf = MapViewOfFile(hResultMapping,FILE_MAP_ALL_ACCESS,0,0,0);
-	rects_mapping_mutex = CreateMutex(NULL,FALSE,"Global\\rects_mapping_mutex");//本线程拥有mutex，其它线程无法拥有
+	add_mapping_buf = (char *)MapViewOfFile(hAddMapping,FILE_MAP_ALL_ACCESS,0,0,0);
+	rects_mapping_mutex = CreateMutex(NULL,FALSE,"Global\\rects_mapping_mutex");
 	file_mapping_mutex = CreateMutex(NULL,FALSE,"Global\\file_mapping_mutex");
+	add_mapping_mutex = CreateMutex(NULL,FALSE,"Global\\add_mapping_mutex");
 	wait_for_recognition_load = CreateEvent(NULL,FALSE,FALSE,"recognition_load");
-//	file_mapping_op_finish = CreateEvent(NULL,FALSE,TRUE,"file_mapping_op_finish");
+
+
 
 	if(nullptr == rects_mapping_mutex)
 	{
-		printf("error in CreateMutext,rects_mapping_mutex:%ld\n",GetLastError());
+		sprintf_s(text,"error in CreateMutext,rects_mapping_mutex:%ld\n",GetLastError());
+		print_by_lock(text);
+		logger.PrintLog("Server construct",text);
 		return;
 	}
 	if(nullptr == file_mapping_mutex)
 	{
-		printf("error in CreateMutext,file_mapping_mutex:%ld\n",GetLastError());
+		sprintf_s(text,"error in CreateMutext,file_mapping_mutex:%ld\n",GetLastError());
+		print_by_lock(text);
+		logger.PrintLog("Server construct",text);
 		return;
 	}
 	if(nullptr == file_mapping_buf )
 	{
-		printf("error in MapViewOffFile with file_mapping_buf: %ld\n",GetLastError());
+		sprintf_s(text,"error in MapViewOffFile with file_mapping_buf: %ld\n",GetLastError());
+		print_by_lock(text);
+		logger.PrintLog("Server construct",text);
 		return;
 	}
 	if(nullptr == rects_mapping_buf)
 	{
-		printf("error in MapViewOffFile with rects_mapping_buf: %ld\n",GetLastError());
+		sprintf_s(text,"error in MapViewOffFile with rects_mapping_buf: %ld\n",GetLastError());
+		print_by_lock(text);
+		logger.PrintLog("Server construct",text);
+		return;
+	}
+	if(nullptr == add_mapping_buf)
+	{
+		sprintf_s(text,"error in MapViewOffFile with add_mapping_buf: %ld\n",GetLastError());
+		print_by_lock(text);
+		logger.PrintLog("Server construct",text);
+		return;
+	}
+	if(nullptr == add_mapping_mutex)
+	{
+		sprintf_s(text,"error in CreateMutex with add_mapping_mutex: %ld\n",GetLastError());
+		print_by_lock(text);
+		logger.PrintLog("Server construct",text);
 		return;
 	}
 
@@ -79,13 +115,13 @@ Server::Server(io_service &io,unsigned int port,std::string ip):io_service_(io),
 
 	/*
 	对于创建成员函数线程，有两种方法
-		方法一：
-		static DWORD WINAPI func(void *p)
-		{
-			Server *s = (Server*)p;
-			s->Core();
-			return 0;
-		}
+	方法一：
+	static DWORD WINAPI func(void *p)
+	{
+	Server *s = (Server*)p;
+	s->Core();
+	return 0;
+	}
 	*/
 	//方法二：曲线救国，通过一些比较迂回的方式创建非静态成员函数线程
 	//对于void Class::func()类型的函数，在编译的时候会转换成普通函数 void func(Class *this),
@@ -102,44 +138,50 @@ Server::Server(io_service &io,unsigned int port,std::string ip):io_service_(io),
 	core_thread_handle = (HANDLE)_beginthreadex(NULL,NULL,proc.ThreadProc,this,NULL,&core_thread_id);
 
 	WaitForSingleObject(CoreStartEvent,INFINITE);
-	printf("already run the Core thread\n");
+	print_by_lock("already run the Core thread\n");
+	logger.PrintLog("Server construct","already run the Core thread\n");
 	char command[50];
-	sprintf(command,"FaceRecognition %ld",core_thread_id);
+	sprintf_s(command,"FaceRecognition %ld",core_thread_id);
 	STARTUPINFO si;
 	ZeroMemory(&si,sizeof(si));
 	GetStartupInfo(&si);
 	ZeroMemory(&recognition_process_info,sizeof(PROCESS_INFORMATION));
-	
-	
+
 
 	if(NULL == hFileMapping)
 	{
-		printf("failed CreateFileMapping with hFileMapping: %ld \n",GetLastError());
+		sprintf_s(text,"failed CreateFileMapping with hFileMapping: %ld \n",GetLastError());
+		print_by_lock(text);
+		logger.PrintLog("Server construct",text);
 		return ;
-		
+
 	}
 	if(NULL == hResultMapping)
 	{
-		printf("failed CreateFileMapping with hFileMapping: %ld \n",GetLastError());
+		sprintf_s(text,"failed CreateFileMapping with hFileMapping: %ld \n",GetLastError());
+		print_by_lock(text);
+		logger.PrintLog("Server construct",text);
 		return;
 	}
 
 	if(!CreateProcess(NULL,command,NULL,NULL,NULL,CREATE_NEW_CONSOLE,NULL,NULL,&si,&recognition_process_info))
 	{
-		printf("failed to start FaceRecognition Process\n");
+		print_by_lock("failed to start FaceRecognition Process\n");
+		logger.PrintLog("Server construct","failed to start FaceRecognition Process");
 		return;
 	}
 	Sleep(1000);
 	CloseHandle(CoreStartEvent);
-	
+
 	WaitForSingleObject(wait_for_recognition_load,INFINITE);
-	
-	std::cout << "begin init accept" << std::endl;
-	
-	if(!init())
+
+	//std::cout << "begin init acceptor" << std::endl;
+	print_by_lock("begin init acceptor\n");
+	logger.PrintLog("Server construct","begin init acceptor\n");
+	if(!acceptor_init())
 	{
-		std::cout << "can not start the server" <<  std::endl;
-		
+		print_by_lock("init acceptor failed\n" );
+		logger.PrintLog("Server construct","init acceptor failed\n" );
 	}
 
 	is_start = true;
@@ -150,7 +192,7 @@ Server::~Server()
 	PostThreadMessage(recognition_main_thread_id,WM_EXIT,NULL,NULL);
 	CloseHandle(core_thread_handle);
 	CloseHandle(CoreStartEvent);
-	
+
 
 	mysql_close(sql_con);
 	UnmapViewOfFile(file_mapping_buf);
@@ -158,14 +200,16 @@ Server::~Server()
 
 	CloseHandle(hFileMapping);
 	CloseHandle(hResultMapping);
+	CloseHandle(hAddMapping);
 
 	CloseHandle(file_mapping_mutex);
 	CloseHandle(rects_mapping_mutex);
+	CloseHandle(add_mapping_mutex);
 	CloseHandle(wait_for_recognition_load);
 }
-bool Server::init()
+bool Server::acceptor_init()
 {
-	
+
 	//绑定端口，监听端口
 	boost::system::error_code ec;
 	acceptor.open(server_addr.protocol(),ec);
@@ -186,20 +230,21 @@ bool Server::init()
 	{
 		io_service_.stop();
 		///printf("logger error: bind failed\n");
-		std::cout << "logger error: bind failed\n" << std::endl;
+		print_by_lock("bind failed\n");
+		logger.PrintLog("Server construct","bind failed");
 		return false;
 
 	}
-	
+
 	acceptor.listen(socket_base::max_connections,ec);
 	assert(!ec);
 
 	if(ec)
 	{
 		io_service_.stop();
-		std::cout <<"logger error:listen failed" << std::endl;
+		print_by_lock("listen failed\n");
+		logger.PrintLog("Server construct","listen failed");
 
-		
 	}
 	for(int i = 0;i < 1;i++)
 	{
@@ -207,48 +252,16 @@ bool Server::init()
 	}
 	return true;
 }
-void Server::serialize_int(int val,char* out)
-{
-	out[0] = out[1] = out[2] = out[3] = 0;
-	out[0] = (val & 255);
-	out[1] = (val >> 8) & 255;
-	out[2] = (val >> 16)&255;
-	out[3] = (val >> 24)&255;
-}
-
-void Server::deserialize_int(uchar* in,int& val)
-{
-	val = 0;
-	val |= in[0];
-	val |= in[1] << 8;
-	val |= in[2] << 16;
-	val |= in[3] << 24;
-}
-
-
 
 unsigned int WINAPI Server::Core()
 {
 	MSG msg;
 	PeekMessage(&msg,NULL,WM_USER,WM_USER,PM_NOREMOVE);
 	//wrEvent = CreateEvent(NULL,FALSE,FALSE,FALSE);
-	union{
-		unsigned int  (WINAPI *func)(VOID* p);
-		unsigned int  (WINAPI Server::*fun)();
-	}proc;
-	
-	//proc.fun = &Server::write_share_file;
 
-	//write_share_mem_thread = (HANDLE)_beginthreadex(NULL,NULL,proc.func,this,NULL,&write_share_mem_thread_id);
-	//WaitForSingleObject(wrEvent,INFINITE);
-	//ResetEvent(wrEvent);
-	//proc.fun = &Server::read_result;
-	//read_share_mem_thread = (HANDLE)_beginthreadex(NULL,NULL,proc.func,this,NULL,&read_share_mem_thread_id);
-	//WaitForSingleObject(wrEvent,INFINITE);
-	//CloseHandle(wrEvent);
 	SetEvent(CoreStartEvent);
 	BOOL bRet;
-	
+
 	is_start = false;
 	while((bRet = GetMessage(&msg,NULL,0,0)) > 0)
 	{
@@ -261,15 +274,29 @@ unsigned int WINAPI Server::Core()
 				uchar* recv_file = recv_buf + 4;
 				int clientId = msg.wParam;
 				int total_bytes;
-				deserialize_int(recv_buf,total_bytes);
-				cout << "total bytes in Server::Core: " << total_bytes << endl;
-				WaitForSingleObject(file_mapping_mutex,INFINITE);
+				//deserialize_int(recv_buf,total_bytes);
+				memcpy(&total_bytes,recv_buf,sizeof(int));
+				//cout << "total bytes in Server::Core: " << total_bytes << endl;
+				sprintf_s(text,"total bytes in Server::Core: %d\n",total_bytes);
+				print_by_lock(text);
+				
+				DWORD dw = WaitForSingleObject(file_mapping_mutex,MAX_WAIT_TIME);
+				switch(dw)
+				{
+				case WAIT_TIMEOUT:
+					print_by_lock("my_server error becuase read result of recognition timeout\n");
+					//进程FaceRecognition任务太多
+					logger.PrintLog("Server Core thread","my_server error becuase read result of recognition timeout");
+					break;
+				}
 				memcpy(file_mapping_buf,recv_buf,total_bytes+4);
-				ReleaseMutex(file_mapping_mutex);
+				
 				int count = 0;
 				while(count < 10 && PostThreadMessage(recognition_thread_id,WM_IMAGE,clientId,NULL) == 0)
 				{
-					printf("error in post thread,tell recognition recieve image:%ld\n",GetLastError());
+					sprintf_s(text,"error in post thread,tell recognition recieve image:%ld\n",GetLastError());
+					print_by_lock(text);
+					logger.PrintLog("Server Core thread",text);
 					count ++;
 				}
 
@@ -283,7 +310,7 @@ unsigned int WINAPI Server::Core()
 			{
 				//包的格式:包的长度+//paper_id的长度(2) + paper_id + name的长度(2) + name + sex(1) + CvRect 
 				size_t size;
-				
+
 				int clientId = msg.wParam;
 				char* ptr = (char*)msg.lParam;
 				memcpy(&size,ptr,4);
@@ -293,10 +320,14 @@ unsigned int WINAPI Server::Core()
 				char sex;
 				memcpy(&paper_id_len,ptr+4,2);
 				memcpy(&nameLen,ptr+4 +2+ paper_id_len,2);
-				
+
 				if(nameLen != 0 && nameLen != size-16-1-2-paper_id_len-2)
 				{
-					cout << "client " << clientId << " MODIFY request has wrong package" << endl;
+					//cout << "client " << clientId << " MODIFY request has wrong package" << endl;
+					sprintf_s(text,"client %d MODIFY request has wrong package\n");
+					print_by_lock(text);
+					logger.PrintLog("Server Core",text);
+
 					delete[] ptr;
 					break;
 				}
@@ -306,16 +337,20 @@ unsigned int WINAPI Server::Core()
 
 				MyRect rect;
 				memcpy(&rect,ptr+4+2+nameLen+2+paper_id_len+1,sizeof(CvRect));
-				cout << "CvRect: " << rect.x << " " << rect.y << " " << rect.width << " " << rect.height << endl;
+				//cout << "CvRect: " << rect.x << " " << rect.y << " " << rect.width << " " << rect.height << endl;
+				sprintf_s(text,"CvRect: %d %d %d %d\n",rect.x,rect.y,rect.width,rect.height);
+				print_by_lock(text);
 				int personId;
 				client_ptr client;
 				client_map_mutex.lock();
 
 				map<int,client_ptr>::iterator client_iter = client_map.find(clientId);
-				
+
 				if(client_iter == client_map.end())
 				{
-					cout << "client had been removed from client_map !!" << endl;
+					//cout << "client had been removed from client_map !!" << endl;
+					print_by_lock("client had been removed from client_map !!\n");
+					logger.PrintLog("Server Core","client had been removed from client_map !!");
 					delete[] ptr;
 					break;
 				}
@@ -327,7 +362,9 @@ unsigned int WINAPI Server::Core()
 				//不存在对应的personId
 				if(id_iter == client->personId_map.end())
 				{
-					cout << "not exist this CvRect: " << rect.x << " " << rect.y << " " << rect.width << " " << rect.height << endl;
+					sprintf_s(text,"not exist CvRect: %d %d %d %d\n",rect.x,rect.y,rect.width,rect.height);
+					print_by_lock(text);
+					logger.PrintLog("Server Core",text);
 					delete[] ptr;
 					break;
 				}
@@ -340,23 +377,18 @@ unsigned int WINAPI Server::Core()
 					if(personId  == -1)
 					{
 						personId = add_person_to_database(paper_id,name,sex);
-						
-
-						
 					}
 					else //有该证件号的人，更新信息
 					{
 						update_person_in_database(personId,name,sex);
-						
-						
 					}
 					//并且通知Recognition加人脸加入数据库中
 					//personId(4) + CvRect
-					WaitForSingleObject(rects_mapping_mutex,INFINITE);
-					memcpy(rects_mapping_buf,&personId,4);
-					memcpy((char *)rects_mapping_buf + 4,&rect,sizeof(rect));
+					WaitForSingleObject(add_mapping_mutex,INFINITE);
+					memcpy(add_mapping_buf,&personId,4);
+					memcpy((char *)add_mapping_buf + 4,&rect,sizeof(rect));
 					PostThreadMessage(recognition_thread_id,WM_ADD_FACE,clientId,NULL);
-					ReleaseMutex(rects_mapping_mutex);
+
 				}
 				else//更新信息
 				{
@@ -378,15 +410,13 @@ unsigned int WINAPI Server::Core()
 						//更正Client类里的personId_map
 						id_iter->second = tmpId;
 						//将该人脸加入人脸数据库中
-						WaitForSingleObject(rects_mapping_mutex,INFINITE);
-						memcpy(rects_mapping_buf,&tmpId,4);
-						memcpy((char *)rects_mapping_buf + 4,&rect,sizeof(rect));
+						WaitForSingleObject(add_mapping_mutex,INFINITE);
+						memcpy(add_mapping_buf,&tmpId,4);
+						memcpy((char *)add_mapping_buf + 4,&rect,sizeof(rect));
 						PostThreadMessage(recognition_thread_id,WM_ADD_FACE,clientId,NULL);
-						ReleaseMutex(rects_mapping_mutex);
+						
 					}
 				}
-				
-				
 				delete[] ptr;
 			}
 			break;
@@ -398,20 +428,21 @@ unsigned int WINAPI Server::Core()
 				{
 					PostThreadMessage(controler,WM_SERVER_ID,core_thread_id,recognition_thread_id);
 				}
-				printf("Get Recognition ID\n");
+				print_by_lock("Get Recognition ID\n");
 			}
 			break;
 		case WM_RESULT_DECTIVE://从FaceRecognition传送过来的检测消息
 			{
 				int clientId = msg.wParam;
-				cout << "WM_RESULT_DECTIVE with client_id "<< clientId << endl;
+				sprintf_s(text,"WM_RESULT_DECTIVE with client_id %d\n",clientId);
+				print_by_lock(text);
 				int size = msg.lParam;
 				char *result = nullptr; //如果有在堆上申请内存，最终会在Client::send_dective_result内释放
 				int len = 0;
 				if(size != 0)
 				{
 					result = new char[(sizeof(CvRect)+4)*size];
-					WaitForSingleObject(rects_mapping_mutex,INFINITE);
+					//WaitForSingleObject(rects_mapping_mutex,INFINITE);
 					memcpy(result,rects_mapping_buf,(sizeof(CvRect)+4)*size);
 					ReleaseMutex(rects_mapping_mutex);
 
@@ -423,10 +454,13 @@ unsigned int WINAPI Server::Core()
 					PersonData p;
 					client_map_mutex.lock();
 					map<int,client_ptr>::iterator client_iter = client_map.find(clientId);
-					
+
 					if(client_iter == client_map.end())
 					{
-						cout << "client had been removed from client_map !!" << endl;
+						print_by_lock("client had been removed from client_map !!\n");
+						logger.PrintLog("Server Core","client had been removed from client_map !!");
+						//通知FaceRecognition删除该client
+						PostThreadMessage(recognition_thread_id,WM_CLIENT_DISCONNECT,clientId,NULL);
 						delete[] result;
 						break;;
 					}
@@ -436,7 +470,8 @@ unsigned int WINAPI Server::Core()
 						memcpy(&person_id,result + i*(sizeof(CvRect) + 4),4);
 						memcpy(&rect,result + i*(sizeof(CvRect)+4)+4,sizeof(CvRect));
 
-						cout << "CvRect: " << rect.x << " " << rect.y << " " << rect.width << " " << rect.height << endl;
+						sprintf_s(text,"CvRect: %d %d %d %d\n",rect.x,rect.y,rect.width,rect.height);
+						print_by_lock(text);
 
 						p = get_person_from_database(person_id);
 						persons.push_back(p);
@@ -450,7 +485,8 @@ unsigned int WINAPI Server::Core()
 						{
 							client->personId_map.insert(pair<MyRect,int>(rect,person_id));
 						}
-						printf("the %d rect is:%d,%d,%d,%d\n",i,rect.x,rect.y,rect.width,rect.height);
+						sprintf_s(text,"the %d rect is:%d,%d,%d,%d\n",i,rect.x,rect.y,rect.width,rect.height);
+						print_by_lock(text);
 						len += 2 + p.paper_id.length() +  2 + p.name.length() + 1 + sizeof(CvRect);
 					}
 					client_map_mutex.unlock();
@@ -475,25 +511,29 @@ unsigned int WINAPI Server::Core()
 						memcpy(ptr+2+nlen + 2 + persons.at(i).paper_id.length()
 							,&persons.at(i).sex,1);
 						memcpy(ptr +2 + persons.at(i).paper_id.length()+ 2 + nlen + 1,&rects.at(i),sizeof(CvRect));
-						printf("%d the sex is %d,%d\n",i,persons.at(i).sex,char(*(ptr+2+nlen)));
+						sprintf_s(text,"%d the sex is %d\n",i,persons.at(i).sex);
+						print_by_lock(text);
 						ptr += 2+ persons.at(i).paper_id.length() + 2 + nlen + 1 + sizeof(CvRect);
 					}
-
+					len += 4;
 				}
-				
+
 				client_map_mutex.lock();
 				map<int,client_ptr>::iterator iter = client_map.find(clientId);
 				if(iter != client_map.end())
 				{
-					cout << "send recognition result to client: " << clientId  << "result length " << len << endl;
-					iter->second->send_dective_result(result,len+4);
+					sprintf_s(text,"send recognition result to client: %d result length %d\n" ,clientId,len);
+					print_by_lock(text);
+					logger.PrintLog("Server Core",text);
+					iter->second->send_dective_result(result,len);
 				}
 				client_map_mutex.unlock();
 			}
 			break;
 		case WM_RECOGNITION_ERROR:
 			{
-				printf("recognition error\n");
+				print_by_lock("recognition error\n");
+				logger.PrintLog("Server Core","recognition error\n");
 				abort();
 			}
 			break;
@@ -501,16 +541,18 @@ unsigned int WINAPI Server::Core()
 			{
 				int id = msg.wParam;
 				client_map_mutex.lock();
-				
+
 				map<int,client_ptr>::iterator iter;
 				iter = client_map.find(id);
 				if(iter == client_map.end())
 				{
-					printf("client already be deleted\n");
+					print_by_lock("client already be deleted\n");
+					logger.PrintLog("Server Core","client already be deleted");
 				}
 				else
 				{
-					printf("client didn't be deleted\n");
+					print_by_lock("client didn't be deleted\n");
+					logger.PrintLog("Server Core","client didn't be deleted");
 				}
 				client_map_mutex.unlock();
 				PostThreadMessage(recognition_thread_id,WM_CLIENT_DISCONNECT,id,NULL);
@@ -526,11 +568,12 @@ unsigned int WINAPI Server::Core()
 			PostThreadMessage(recognition_thread_id,WM_EXIT,NULL,NULL);
 			io_service_.stop();
 			is_start = false;
-			
+
 			break;
 		default:
 			{
-				printf("server:undefine message\n");
+				print_by_lock("undefine message\n");
+				logger.PrintLog("Server Core","undefine message");
 			}
 			break;
 		}
@@ -561,21 +604,21 @@ void Server::run()
 
 void Server::start()
 {
-	std::cout << "server start" << std::endl;
+	print_by_lock("server start\n");
+	boost::asio::io_service::work work(io_service_);//使得就算没有任务了，run线程也不会退出
 	boost::thread t(boost::bind(&Server::run,this));
 	t.join();
-	
-	
 }
 
 void Server::accept_handler(const boost::system::error_code& ec,client_ptr& client)
 {
 	if(!ec)
 	{
-		
-		std::cout << "logger: client "<< client->id <<" connect" << std::endl;
-		std::cout << client->cli_socket.remote_endpoint().address() << std::endl;
-		client->start();
+
+		sprintf_s(text,"client %d connect\n",client->id);
+		print_by_lock(text);
+		print_line_by_lock(client->cli_socket.remote_endpoint().address().to_string().c_str());
+		client->start_recv_request();
 		start_next_accept();
 	}
 	else
@@ -593,7 +636,7 @@ void Server::set_server_addr(unsigned int port,std::string ip)
 		boost::system::error_code ec;
 		server_addr = ip::tcp::endpoint(ip::address::from_string(ip,ec),port);assert(!ec);
 	}
-	
+
 }
 
 
@@ -606,10 +649,10 @@ PersonData Server::get_person_from_database(int person_id)
 		return p;
 	}
 	char query[50];
-	sprintf(query,"select * from person where Id=%d",person_id);
+	sprintf_s(query,"select * from person where Id=%d",person_id);
 	MYSQL_RES* result = nullptr;
-	
-	
+
+
 	if(!mysql_query(sql_con,query))
 	{
 		result = mysql_store_result(sql_con);
@@ -642,7 +685,7 @@ int Server::add_person_to_database(string paper_id,string name,char sex)
 	int personId = -1;
 
 	string query = "insert into person(paper_id,name,sex) values('" + paper_id +"','" +  name + "'," + (sex == 1?"1":"0") + ")";
-	
+
 	//query = AnsiToUTF8(query.c_str(),query.length());
 
 	MYSQL_RES* result = nullptr;
@@ -656,9 +699,9 @@ int Server::add_person_to_database(string paper_id,string name,char sex)
 		{
 			MYSQL_ROW row = nullptr;
 			row = mysql_fetch_row(result);
-			
+
 			personId = atoi(row[0]);
-			
+
 		}
 	}
 	if(personId == -1)
@@ -669,13 +712,13 @@ int Server::add_person_to_database(string paper_id,string name,char sex)
 bool Server::update_person_in_database(int personId,string name,char sex)
 {
 	string query;
-	//sprintf(query,"update person set name='%s',sex=%d where id=%d",name.c_str(),sex,personId);
+	//sprintf_s(query,"update person set name='%s',sex=%d where id=%d",name.c_str(),sex,personId);
 	char id[12];
-	sprintf(id,"%d",personId);
+	sprintf_s(id,"%d",personId);
 	query = "update person set name='" + name + "',sex=" + (sex == 1?"1":"0") + " where id=" + id;
 	//query = AnsiToUTF8(query.c_str(),query.length());
 	MYSQL_RES* result = nullptr;
-	
+
 	mysql_query(sql_con,query.c_str());
 
 	return true;
@@ -687,7 +730,7 @@ int Server::get_next_database_insert_id()
 
 	char query[40] = "show table status like 'person'";//查看表的维护信息，可以找到Auto_increment对应的字段的下一个值
 	MYSQL_RES* result = nullptr;
-	
+
 	if(!mysql_query(sql_con,query))
 	{
 		result = mysql_store_result(sql_con);
@@ -698,10 +741,10 @@ int Server::get_next_database_insert_id()
 			int field_num = mysql_num_fields(result);
 			MYSQL_FIELD* fds=  mysql_fetch_fields(result);
 			int i;
-			
+
 			for(i = 0;i<field_num;i++)
 			{
-				
+
 				if(strcmp(fds[i].name,"Auto_increment") == 0)
 					break;
 			}
@@ -714,56 +757,9 @@ int Server::get_next_database_insert_id()
 bool Server::delete_person_from_database(int personId)
 {
 	char query[50];
-	sprintf(query,"delete from person where id =%d",1009);
+	sprintf_s(query,"delete from person where id =%d",1009);
 	return true;
 }
-
-string Server::AnsiToUTF8(const char src[],int len)
-{
-	int size = MultiByteToWideChar(CP_ACP,0,src,len,NULL,0);
-	wchar_t *dst = new wchar_t[size];
-	if(!MultiByteToWideChar(CP_ACP,0,src,len,dst,size))
-	{
-		delete[] dst;
-		return "";
-	}
-
-	//unicode to utf8
-	string str;
-	char s[6];
-	for(int i = 0;i < size;i++)
-	{
-		if(dst[i] >=0 && dst[i] <0x80)
-		{
-			str.push_back(dst[i]);
-		}
-		else if(dst[i] >= 0x80 && dst[i] < 0x800)
-		{
-			s[1] = dst[i] & 0x3f | 0x80;
-			s[0] = (dst[i] >> 6) | 0xc0;
-			str.append(s,2);
-		}
-		else if(dst[i] >= 0x800 && dst[i] < 0x10000)
-		{
-			s[2] = dst[i] & 0x3f | 0x80;
-			s[1] = (dst[i] >> 6) & 0x3f | 0x80;
-			s[0] = (dst[i] >> 12) & 0x3f | 0xe0;
-			str.append(s,3);
-		}
-		else if(dst[i] >= 0x10000 && dst[i] < 0x200000)
-		{}
-		else if(dst[i] >= 0x200000 && dst[i] < 0x4000000)
-		{}
-		else if(dst[i] >= 0x4000000 && dst[i] < 0x80000000)
-		{}
-		else //error
-		{
-		}
-	}
-	delete[] dst;
-	return str;
-}
-
 int Server::find_person_id_in_database(string paper_id)
 {
 	string query;

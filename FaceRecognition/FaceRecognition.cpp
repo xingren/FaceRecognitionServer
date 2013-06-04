@@ -2,22 +2,22 @@
 //
 
 /*
- * Copyright (c) 2011. Philipp Wagner <bytefish[at]gmx[dot]de>.
- * Released to public domain under terms of the BSD Simplified license.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *   * Redistributions of source code must retain the above copyright
- *     notice, this list of conditions and the following disclaimer.
- *   * Redistributions in binary form must reproduce the above copyright
- *     notice, this list of conditions and the following disclaimer in the
- *     documentation and/or other materials provided with the distribution.
- *   * Neither the name of the organization nor the names of its contributors
- *     may be used to endorse or promote products derived from this software
- *     without specific prior written permission.
- *
- *   See <http://www.opensource.org/licenses/bsd-license>
- */
+* Copyright (c) 2011. Philipp Wagner <bytefish[at]gmx[dot]de>.
+* Released to public domain under terms of the BSD Simplified license.
+*
+* Redistribution and use in source and binary forms, with or without
+* modification, are permitted provided that the following conditions are met:
+*   * Redistributions of source code must retain the above copyright
+*     notice, this list of conditions and the following disclaimer.
+*   * Redistributions in binary form must reproduce the above copyright
+*     notice, this list of conditions and the following disclaimer in the
+*     documentation and/or other materials provided with the distribution.
+*   * Neither the name of the organization nor the names of its contributors
+*     may be used to endorse or promote products derived from this software
+*     without specific prior written permission.
+*
+*   See <http://www.opensource.org/licenses/bsd-license>
+*/
 
 #include"stdafx.h"
 
@@ -47,6 +47,7 @@ HANDLE thread_done;
 DWORD main_thread_id;
 HANDLE hFileMapping;
 HANDLE hResultMapping;
+HANDLE hAddMapping;
 DWORD message_thread_id;
 DWORD save_thread_id;
 HANDLE CoreExitEvent;
@@ -54,6 +55,7 @@ HANDLE CoreExitEvent;
 
 HANDLE rects_mapping_mutex;//对检测结果的共享区域互斥访问
 HANDLE file_mapping_mutex;//对待检测图片的共享区域互斥访问
+HANDLE add_mapping_mutex;//添加命令的互斥访问
 
 
 bool core_exit = false;
@@ -73,31 +75,23 @@ using namespace std;
 
 static const int async_run_num = 4;
 const int IPC_BUFF_SIZE = 1024*1024*10*async_run_num;
+const int MAX_WAIT_TIME = 1000*100;
+
+uchar *file_mapping;
+char *rects_mapping;
+char *add_mapping;
+
+
 //HANDLE file_mapping_op_finish;
 
-Ptr<FaceRecognizer> model;//facerecognition ,use opencv lib
+Ptr<FaceRecognizer> FaceDetector;//facerecognition ,use opencv lib
 
 //处理队列
 boost::mutex work_queue_mutex;
 boost::mutex client_map_mutex;
 
-
-template<class T>
-void deserialze(char* p,size_t len,T& val)
-{
-	size_t size = sizeof(T);
-	int n = min(len,size);
-	memcpy(&val,p,n);
-}
-
-template<class T>
-void serialze(char *out,size_t len,T& val)
-{
-	size_t size = sizeof(T);
-	int n= min(len,size);
-	memcpy(out,&val,n);
-}
 boost::mutex _mutex;
+
 void Print_S(char*info )
 {
 	_mutex.lock();
@@ -134,9 +128,8 @@ vector<WorkInfo> cli_vec;
 //相当于session，保存当前客户端的一些数据
 map<int,WorkInfo> client_map;
 
-uchar *file_mapping;
-char *rects_mapping;
-CvRect* displaydetection(IplImage *pInpImg,int &resCount)
+
+CvRect* FaceDetection(IplImage *pInpImg,int &resCount)
 {
 
 	CvHaarClassifierCascade* pCascade=0;		//指向后面从文件中获取的分类器
@@ -153,10 +146,10 @@ CvRect* displaydetection(IplImage *pInpImg,int &resCount)
 	}
 	//人脸检测
 	pFaceRectSeq=cvHaarDetectObjects(pInpImg,pCascade,pStorage,
-		1.2,2,CV_HAAR_DO_CANNY_PRUNING,cvSize(40,40));
+		1.2,3,CV_HAAR_DO_CANNY_PRUNING,cvSize(40,40));
 	//将检测到的人脸以矩形框标出。
 	int i;
-	
+
 	printf("the number of face is %d\n",pFaceRectSeq->total);
 	resCount = pFaceRectSeq->total;
 	if(pFaceRectSeq->total == 0)
@@ -167,7 +160,7 @@ CvRect* displaydetection(IplImage *pInpImg,int &resCount)
 	}
 	cvNamedWindow("haar window",1);
 	IplImage *result = cvCreateImage(cvSize(92,112),pInpImg->depth,pInpImg->nChannels);
-	
+
 	//if(NULL == result)
 	//	//添加错误处理：无法分配内存
 	//{}
@@ -180,7 +173,7 @@ CvRect* displaydetection(IplImage *pInpImg,int &resCount)
 	{
 
 		CvRect* r=(CvRect*)cvGetSeqElem(pFaceRectSeq,i);
-		
+
 		memcpy(&res[i],r,sizeof(CvRect));
 		CvPoint pt1= {r->x,r->y};
 		CvPoint pt2= {r->x+r->width,r->y+r->height};
@@ -189,7 +182,7 @@ CvRect* displaydetection(IplImage *pInpImg,int &resCount)
 
 		//将捕捉的脸保存
 
-		
+
 
 		//cvSetImageROI(pInpImg,*r);
 		cvResize(pInpImg,result,CV_INTER_LINEAR);
@@ -206,7 +199,7 @@ CvRect* displaydetection(IplImage *pInpImg,int &resCount)
 
 	cvShowImage("haar window",show_img);
 	//	cvResetImageROI(pInpImg);
-//	cvWaitKey(0);
+	//	cvWaitKey(0);
 	cvDestroyWindow("haar window");
 	//cvReleaseImage(&pInpImg);
 	cvReleaseHaarClassifierCascade(&pCascade);
@@ -214,24 +207,6 @@ CvRect* displaydetection(IplImage *pInpImg,int &resCount)
 	cvReleaseImage(&result);
 	cvReleaseImage(&show_img);
 	return res;
-}
-
-static void read_csv(const string& filename, vector<Mat>& images, vector<int>& labels, char separator = ';') {
-    std::ifstream file(filename.c_str(), ifstream::in);
-    if (!file) {
-        string error_message = "No valid input file was given, please check the given filename.";
-        CV_Error(CV_StsBadArg, error_message);
-    }
-    string line, path, classlabel;
-    while (getline(file, line)) {
-        stringstream liness(line);
-        getline(liness, path, separator);
-        getline(liness, classlabel);
-        if(!path.empty() && !classlabel.empty()) {
-            images.push_back(imread(path, 0));
-            labels.push_back(atoi(classlabel.c_str()));
-        }
-    }
 }
 
 void MyPostThreadMessage(DWORD thread_id,MSG &msg)
@@ -262,10 +237,10 @@ unsigned int WINAPI Core(VOID* param)
 {
 	WorkInfo tmp;
 	int client_id;
-	
+
 	while(!core_exit)
 	{
-		
+
 		work_queue_mutex.lock();
 		if(work_queue.size() == 0)
 		{
@@ -285,15 +260,15 @@ unsigned int WINAPI Core(VOID* param)
 			{
 				printf("recognition with client id %d\n",client_id);
 
-		//		imshow("test",tmp.img);
-		//		waitKey();
-		//		cv::destroyWindow("test");
+				//		imshow("test",tmp.img);
+				//		waitKey();
+				//		cv::destroyWindow("test");
 
 
 				IplImage img = IplImage(tmp.img); //不用Release，因为是共享内存
 				int resCount;
 				CvRect* rects;
-				rects = displaydetection(&img,resCount);
+				rects = FaceDetection(&img,resCount);
 
 				if(nullptr != rects)
 				{
@@ -313,26 +288,26 @@ unsigned int WINAPI Core(VOID* param)
 						cvCvtColor(face,face_gray,CV_RGB2GRAY);
 						printf("after cvCvtColor\n");
 						int label = -1;
-						label = model->predict(Mat(face_gray));
+						label = FaceDetector->predict(Mat(face_gray));
 						label = (label < 1000)?-1:label;
-						serialze(rects_mapping + i*(sizeof(CvRect) + 4),4,label);
+						//serialze(rects_mapping + i*(sizeof(CvRect) + 4),4,label);
+						memcpy(rects_mapping + i*(sizeof(CvRect)+4),&label,4);
 						tmp.personId.push_back(label);
-
 						//这里要互斥访问
 						memcpy(rects_mapping + i*(sizeof(CvRect) + 4)+4,&rects[i],sizeof(CvRect));
-						
+
 
 					}
-					ReleaseMutex(rects_mapping_mutex);
+					
 					cvReleaseImage(&face_gray);
 					cvReleaseImage(&face);
 				}
 				if(nullptr!=rects)
 					delete[] rects;
-								
-				cout << "send the dective results to server" << endl;
+
+				cout << "send the dective results to server client id: "<< client_id << endl;
 				PostThreadMessage(server_thread_id,WM_RESULT_DECTIVE,client_id,resCount);
-				
+
 			}
 			break;
 		case WM_ADD:
@@ -340,13 +315,13 @@ unsigned int WINAPI Core(VOID* param)
 				printf("Recognition: client id %d:ADD\n",client_id);
 				IplImage img = IplImage(tmp.img);
 
-				//用以model->update的参数
+				//用以FaceDetector->update的参数
 				vector<Mat> input;
 				vector<int> labels;
 
-		//		imshow("show",tmp.img);
-		//		waitKey(0);
-		//		cv::destroyWindow("show");
+				//		imshow("show",tmp.img);
+				//		waitKey(0);
+				//		cv::destroyWindow("show");
 
 				CvRect rect = tmp.rects.at(0);
 				printf("the rect is:%d %d %d %d\n",rect.x,rect.y,rect.width,rect.height);
@@ -359,7 +334,7 @@ unsigned int WINAPI Core(VOID* param)
 				printf("the person id:%d\n",tmp.personId.at(0));
 				input.push_back(Mat(face_gray,false));
 				labels.push_back(tmp.personId.at(0));
-				model->update(input,labels);
+				FaceDetector->update(input,labels);
 				cvReleaseImage(&face);
 				cvReleaseImage(&face_gray);
 			}
@@ -377,11 +352,12 @@ unsigned int WINAPI ProcessMessage(VOID* param)
 	PeekMessage(&msg,NULL,WM_USER,WM_USER,PM_NOREMOVE);
 	SetEvent(thread_done);
 	hFileMapping = OpenFileMapping(FILE_MAP_ALL_ACCESS,FALSE,"file-mapping");
-	
+
 	if(NULL == hFileMapping)
 	{
 		cout << "error in hFileMapping " << GetLastError() << endl;
-		
+		PostThreadMessage(server_thread_id,WM_RECOGNITION_ERROR,NULL,NULL);
+		return -1;
 	}
 
 	hResultMapping = OpenFileMapping(FILE_MAP_ALL_ACCESS,FALSE,"result-mapping");
@@ -389,13 +365,21 @@ unsigned int WINAPI ProcessMessage(VOID* param)
 	if(NULL == hResultMapping)
 	{
 		cout << "error in hResultMapping" << endl;
+		PostThreadMessage(server_thread_id,WM_RECOGNITION_ERROR,NULL,NULL);
+		return -1;
 	}
-
-		file_mapping = (uchar*)MapViewOfFile(hFileMapping,FILE_MAP_ALL_ACCESS,
-					0,0,0);
+	hAddMapping = OpenFileMapping(FILE_MAP_ALL_ACCESS,FALSE,"add-mapping");
+	if(NULL == hAddMapping)
+	{
+		cout << "error in hAddMapping" << endl;
+		PostThreadMessage(server_thread_id,WM_RECOGNITION_ERROR,NULL,NULL);
+		return -1;
+	}
+	file_mapping = (uchar*)MapViewOfFile(hFileMapping,FILE_MAP_ALL_ACCESS,
+		0,0,0);
 	rects_mapping = (char*)MapViewOfFile(hResultMapping,FILE_MAP_ALL_ACCESS,
-					0,0,0);
-
+		0,0,0);
+	add_mapping = (char*)MapViewOfFile(hAddMapping,FILE_MAP_ALL_ACCESS,0,0,0);
 	if(nullptr == file_mapping )
 	{
 		printf("error in MapViewOffFile with file_mapping: %ld\n",GetLastError());
@@ -409,10 +393,7 @@ unsigned int WINAPI ProcessMessage(VOID* param)
 		return -1;
 	}
 
-	printf("file_mapping point:%x\n",file_mapping);
-	printf("rects point:%x\n",rects_mapping);
 
-	
 	BOOL bRet;
 	while((bRet = GetMessage(&msg,NULL,0,0)) > 0)
 	{
@@ -427,30 +408,23 @@ unsigned int WINAPI ProcessMessage(VOID* param)
 			break;
 		case WM_IMAGE:
 			{
-				
+
 				printf("Recognition: WM_IMAGE\n");
 				//flag1
-				WaitForSingleObject(file_mapping_mutex,INFINITE);
+				
 				uchar* buf = file_mapping + 4;
 				size_t len;
-				deserialze((char*)file_mapping,4,len);
+				memcpy(&len,file_mapping,4);
 				vector<uchar> vu;
 				for(int i = 0;i < len;i++)
 					vu.push_back(buf[i]);
-				ReleaseMutex(file_mapping_mutex);
-				//getchar();
-				//shared memory read finish,
-				//SetEvent(file_mapping_op_finish);
-				//flag2
-				
 
-				printf("Recognition: WM_IMAGE flag1 done\n");
+				ReleaseMutex(file_mapping_mutex);
 				WorkInfo tmp;
 				tmp.client_id = msg.wParam;
 				printf("recognition WM_IMAGE with client id %d\n",tmp.client_id);
 				tmp.personId.push_back(msg.wParam);
 				Mat img = imdecode(vu,CV_LOAD_IMAGE_COLOR);
-				printf("Recognition: WM_IMAGE flag2 done\n");
 				tmp.img = img;
 				tmp.work_type = WM_IMAGE;
 				work_queue_mutex.lock();
@@ -466,12 +440,12 @@ unsigned int WINAPI ProcessMessage(VOID* param)
 				if(client_map.end() != iter)
 				{
 					iter->second.img = tmp.img;
-					printf("FaceRecognition:client id %d:change image \n");
+					printf("FaceRecognition:client id %d:change image \n",tmp.client_id);
 				}
 				else
 				{
 					client_map.insert(pair<int,WorkInfo>(tmp.client_id,tmp));
-					printf("FaceRecognition:client id %d:insert this client id to client_map\n");
+					printf("FaceRecognition:client id %d:insert this client id to client_map\n",tmp.client_id);
 				}
 				client_map_mutex.unlock();
 			}
@@ -482,11 +456,11 @@ unsigned int WINAPI ProcessMessage(VOID* param)
 				printf("Recognition:WM_ADD_FACE\n");
 
 				char content[4+sizeof(CvRect)];
-				WaitForSingleObject(rects_mapping_mutex,INFINITE);
 
-				memcpy(content,rects_mapping,4+sizeof(CvRect));
 
-				ReleaseMutex(rects_mapping_mutex);
+				memcpy(content,add_mapping,4+sizeof(CvRect));
+
+				ReleaseMutex(add_mapping_mutex);
 				int personId;
 				memcpy(&personId,content,4);
 				CvRect rect;
@@ -500,25 +474,25 @@ unsigned int WINAPI ProcessMessage(VOID* param)
 				if(iter == client_map.end())//找不到客户端
 				{
 					PostThreadMessage(server_thread_id,WM_ADD_FACE_FAILED,clientId,personId);
-					
+
 				}
 				else
 				{
-					
-				WorkInfo work = iter->second;
-				
-				work.work_type = WM_ADD;
-				work.rects.clear();
-				work.rects.push_back(rect);
-				work.personId.clear();
-				work.personId.push_back(personId);
-				work_queue_mutex.lock();
-				work_queue.push(work);
-				work_queue_mutex.unlock();
-				
-				
+
+					WorkInfo work = iter->second;
+
+					work.work_type = WM_ADD;
+					work.rects.clear();
+					work.rects.push_back(rect);
+					work.personId.clear();
+					work.personId.push_back(personId);
+					work_queue_mutex.lock();
+					work_queue.push(work);
+					work_queue_mutex.unlock();
+
+
 				}
-				
+
 			}
 			break;
 		case WM_EXIT:
@@ -547,6 +521,10 @@ unsigned int WINAPI ProcessMessage(VOID* param)
 				}
 			}
 			break;
+		case WM_SAVE:
+			cout << "WM_SAVE " << endl;
+			PostThreadMessage(save_thread_id,WM_SAVE,NULL,NULL);
+			break;
 		default:
 			{
 				cout << "undefine message type in process thread" << endl;
@@ -562,16 +540,18 @@ unsigned int WINAPI SaveThread(VOID* PVOID)
 {
 	MSG msg;
 	BOOL bRet;
+	PeekMessage(&msg,NULL,WM_USER,WM_USER,PM_NOREMOVE);
 	while((bRet = GetMessage(&msg,NULL,NULL,NULL))>0)
 	{
 		TranslateMessage(&msg);
 		switch(msg.message)
 		{
 		case WM_SAVE:
-			model->save("../FaceData.xml");
+			cout << "save face data "<< endl;
+			FaceDetector->save("../FaceData.xml");
 			break;
 		case WM_EXIT:
-			model->save("../FaceData.xml");
+			FaceDetector->save("../FaceData.xml");
 			return 0;
 			break;
 		}
@@ -593,7 +573,7 @@ int _tmain(int argc, _TCHAR* argv[]) {
 
 	file_mapping_mutex = CreateMutex (NULL,FALSE,"Global\\file_mapping_mutex");
 	rects_mapping_mutex = CreateMutex (NULL,FALSE,"Global\\rects_mapping_mutex");
-
+	add_mapping_mutex = CreateMutex(NULL,FALSE,"Global\\add_mapping_mutex");
 	if(rects_mapping_mutex == NULL)
 	{
 		printf("failed to open mutex:file_mapping_mutex:%ld\n",GetLastError());
@@ -606,40 +586,34 @@ int _tmain(int argc, _TCHAR* argv[]) {
 		PostThreadMessage(server_thread_id,WM_RECOGNITION_ERROR,NULL,NULL);
 		return -1;
 	}
+	if(add_mapping_mutex == NULL)
+	{
+		printf("failed to open mutex: add_mapping_mutex:%ld\n");
+		PostThreadMessage(server_thread_id,WM_RECOGNITION_ERROR,NULL,NULL);
+		return -1;
+	}
 	CoreExitEvent = CreateEvent(NULL,FALSE,FALSE,NULL);
 	main_thread_id = GetCurrentThreadId();
 	thread_done = CreateEvent(NULL,FALSE,FALSE,"build-thread-queue");
 	HANDLE get_message_thread = (HANDLE)_beginthreadex(NULL,NULL,ProcessMessage,NULL,NULL,(unsigned int*)&message_thread_id);
 	WaitForSingleObject(thread_done,INFINITE);
-	
+
 	HANDLE save_add_face_thread = (HANDLE)_beginthreadex(NULL,NULL,SaveThread,NULL,NULL,(unsigned int*)save_thread_id);
 	printf("create ProcessMessage \n");
 	DWORD core_thread_id;
 	HANDLE core_thread_handler = (HANDLE)_beginthreadex(NULL,NULL,Core,NULL,NULL,(unsigned int*)&core_thread_id);
 	printf("create core thread \n");
-	//freopen("../train.txt","r",stdin);
-    
+
 	HANDLE wait_load = CreateEvent(NULL,FALSE,FALSE,"recognition_load");
 
-    model = createLBPHFaceRecognizer();
-    //0model->train(images, labels);
-	model->load("../FaceData.xml");
+	FaceDetector = createLBPHFaceRecognizer();
+
+	FaceDetector->load("../FaceData.xml");
 
 	SetEvent(wait_load);
 
-    // The following line predicts the label of a given
-    // test image:
-	//model->save("LBP_TrainData.xml");
-  //  int predictedLabel = model->predict(testSample);
-    //
-    // To get the confidence of a prediction call the model with:
-    //
-    //      int predictedLabel = -1;
-    //      double confidence = 0.0;
-    //      model->predict(testSample, predictedLabel, confidence);
-    //
 
-	
+
 	MSG msg;
 	msg.message = WM_GET_RECOGNITION_ID;
 	msg.wParam = message_thread_id;
@@ -652,8 +626,8 @@ int _tmain(int argc, _TCHAR* argv[]) {
 		switch(msg.message)
 		{
 		case WM_EXIT:
-		
-			model->save("../FaceData.xml");
+
+			FaceDetector->save("../FaceData.xml");
 
 
 			CloseHandle(get_message_thread);
@@ -669,7 +643,7 @@ int _tmain(int argc, _TCHAR* argv[]) {
 			break;
 		}
 	}
-	model->save("../FaceData.xml");
+	FaceDetector->save("../FaceData.xml");
 	CloseHandle(get_message_thread);
 	CloseHandle(thread_done);
 	CloseHandle(core_thread_handler);
@@ -678,5 +652,5 @@ int _tmain(int argc, _TCHAR* argv[]) {
 	CloseHandle(save_add_face_thread);
 	CloseHandle(hFileMapping);
 	CloseHandle(hResultMapping);
-    return 0;
+	return 0;
 }
